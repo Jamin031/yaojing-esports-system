@@ -1,0 +1,61 @@
+:root {
+  font-family: 'SF Pro Display', 'PingFang SC', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #0f0f10;
+  --brand-black: #0f0f10;
+  --brand-orange: #ff7a00;
+  --brand-gray: #d9d9d9;
+  --surface-primary: #fafaf8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--surface-primary);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.el-message.brand-message {
+  border-radius: 14px;
+  border: 1px solid transparent;
+  box-shadow: 0 12px 24px rgba(15, 15, 16, 0.15);
+  backdrop-filter: blur(8px);
+}
+
+.el-message.brand-message .el-message__content {
+  font-weight: 600;
+}
+
+.el-message.brand-message--success {
+  border-color: rgba(255, 122, 0, 0.4);
+}
+
+.el-message.brand-message--warning {
+  border-color: rgba(255, 122, 0, 0.45);
+}
+
+.el-message.brand-message--error {
+  border-color: rgba(240, 66, 54, 0.35);
+}

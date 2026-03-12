@@ -1,0 +1,78 @@
+USE xbdj_saas;
+
+-- stores
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS domain_prefix VARCHAR(100) NULL;
+
+-- users
+ALTER TABLE users ADD COLUMN IF NOT EXISTS real_name VARCHAR(100) NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status TINYINT DEFAULT 1;
+
+-- orders
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_no VARCHAR(50) NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_nickname VARCHAR(100) NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_order_remark TEXT NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_anonymous TINYINT DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS store_commission DECIMAL(10,2) DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS platform_commission DECIMAL(10,2) DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shop_commission DECIMAL(10,2) DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS completed_at DATETIME NULL;
+
+-- 如果 orders.status 还是旧枚举，这句用来改成更灵活的 VARCHAR
+ALTER TABLE orders MODIFY COLUMN status VARCHAR(50) DEFAULT 'pending_contact';
+
+-- online_orders
+ALTER TABLE online_orders ADD COLUMN IF NOT EXISTS customer_nickname VARCHAR(100) NULL;
+ALTER TABLE online_orders ADD COLUMN IF NOT EXISTS customer_order_remark TEXT NULL;
+ALTER TABLE online_orders ADD COLUMN IF NOT EXISTS is_anonymous TINYINT DEFAULT 0;
+ALTER TABLE online_orders MODIFY COLUMN status VARCHAR(50) DEFAULT 'pending_contact';
+
+-- 如果问题订单表还没有
+CREATE TABLE IF NOT EXISTS problem_orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  old_amount DECIMAL(10,2) DEFAULT 0,
+  revised_amount DECIMAL(10,2) DEFAULT 0,
+  problem_remark TEXT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 如果回收订单表还没有
+CREATE TABLE IF NOT EXISTS recycle_orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  deleted_by INT NULL,
+  deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 如果操作日志表还没有
+CREATE TABLE IF NOT EXISTS operation_logs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  action TEXT NOT NULL,
+  role VARCHAR(50) NULL,
+  ip VARCHAR(50) NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 如果权限表还没有
+CREATE TABLE IF NOT EXISTS permissions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  code VARCHAR(100) NOT NULL UNIQUE
+);
+
+-- 如果角色权限表还没有
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  role VARCHAR(50) NOT NULL,
+  permission_id INT NOT NULL
+);
+
+-- 如果高峰统计表还没有
+CREATE TABLE IF NOT EXISTS orders_hour_stats (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  store_id INT NULL,
+  stat_date DATE NOT NULL,
+  hour_num INT NOT NULL,
+  order_count INT DEFAULT 0
+);
