@@ -8,7 +8,6 @@ import { getList, getPayloadObject } from '../utils/api';
 import {
   getIncomingOrderAudioVolume,
   getIncomingOrderAudioVolumeRange,
-  notifyIncomingOrderByAudio,
   setIncomingOrderAudioVolume,
   setupIncomingOrderAudio,
 } from '../utils/alertAudio';
@@ -18,12 +17,26 @@ import {
   normalizeRole,
 } from '../utils/permissionAccess';
 import { NOTIFICATION_AUDIO_VIEW_KEYS } from '../utils/viewPermissionKeys';
+import { connectSocket, getSocket } from '../utils/socket';
+import { emitAdminSync } from '../utils/adminSync';
+import {
+  clearOrderAlertCenter,
+  dispatchIncomingOrderAlert,
+  getOrderAlertCenterState,
+  initOrderAlertCenter,
+  isOrderAlertPageForeground,
+  requestDesktopNotificationPermission,
+} from '../utils/orderAlertCenter';
 
 const POLLING_INTERVAL = 5000;
 const MAX_UNREAD_ITEMS = 80;
 const MAX_MEMORY_KEYS = 500;
 const SEEN_STAMP_STORAGE_KEY = 'west-notify-last-seen-stamp';
 const LOCAL_READ_KEYS_STORAGE_KEY = 'west-notify-local-read-keys';
+
+let activeSocket = null;
+let socketConnectHandler = null;
+let socketOrderCreatedHandler = null;
 
 function parseTime(value) {
   if (!value) return 0;
@@ -245,6 +258,9 @@ function normalizeNotification(raw) {
     id: key,
     notify_id: notifyId ? String(notifyId) : null,
     order_id: orderId ? String(orderId) : null,
+    type: String(firstNonEmpty(raw.type, raw.notification_type, raw.notificationType, 'order_created') || 'order_created')
+      .trim()
+      .toLowerCase(),
     order_no: String(firstNonEmpty(raw.order_no, raw.orderNo, orderId, '-')),
     store_name: String(storeName || '-'),
     amount,
@@ -365,10 +381,6 @@ function extractRows(response) {
   return unique;
 }
 
-function buildNotificationMessage(item) {
-  return `${item.store_name || '-'}来单：${item.order_info || '-'}，金额${displayAmount(item.amount)}，联系方式${item.contact || '-'}`;
-}
-
 function resolveUserId(userInfo) {
   if (!userInfo || typeof userInfo !== 'object') return '';
   const value = firstNonEmpty(userInfo.id, userInfo.user_id, userInfo.userId, userInfo.uid, userInfo.account_id, userInfo.accountId, '');
@@ -463,6 +475,10 @@ export const useNotificationStore = defineStore('notification', {
     localReadKeys: [],
     audioVolume: getIncomingOrderAudioVolume(),
     audioVolumeRange: getIncomingOrderAudioVolumeRange(),
+    desktopNotificationSupported: false,
+    desktopNotificationPermission: 'unsupported',
+    backgroundAttentionCount: 0,
+    needsFollowUpPoll: false,
   }),
   actions: {
     canUseNotification(overrideUserInfo = null, overrideRole = '') {
@@ -499,6 +515,74 @@ export const useNotificationStore = defineStore('notification', {
       const profileKey = this.sessionKey || `${this.role}:${this.userId || 'anonymous'}`;
       this.audioVolume = setIncomingOrderAudioVolume(value, profileKey);
       return this.audioVolume;
+    },
+    syncAlertCenterState() {
+      const runtimeState = getOrderAlertCenterState();
+      this.desktopNotificationSupported = Boolean(runtimeState.desktopNotificationSupported);
+      this.desktopNotificationPermission = runtimeState.desktopNotificationPermission || 'unsupported';
+      this.backgroundAttentionCount = Number(runtimeState.pendingCount || 0);
+    },
+    promptDesktopPermissionHint() {
+      ElNotification({
+        title: '建议开启系统通知',
+        message: '为减少后台挂页漏单，请在右上角提醒面板里开启系统通知。',
+        type: 'info',
+        duration: 8000,
+        position: 'top-right',
+        offset: 78,
+      });
+    },
+    async requestDesktopPermissionAccess() {
+      const permission = await requestDesktopNotificationPermission();
+      this.syncAlertCenterState();
+      return permission;
+    },
+    emitIncomingOrderSync(item, source = 'order-alert') {
+      if (!item?.order_id) return;
+      emitAdminSync('order-alert-received', {
+        focus_order_id: String(item.order_id),
+        focus_at: String(Date.now()),
+        allow_same_tab: true,
+        source_type: source,
+      });
+    },
+    bindRealtimeChannel(token, router) {
+      if (!token) return;
+
+      const socket = connectSocket(token);
+      if (!socket) return;
+
+      const prevSocket = activeSocket || getSocket();
+      if (prevSocket && socketConnectHandler) {
+        prevSocket.off('connect', socketConnectHandler);
+      }
+      if (prevSocket && socketOrderCreatedHandler) {
+        prevSocket.off('order:new', socketOrderCreatedHandler);
+      }
+
+      activeSocket = socket;
+      socketConnectHandler = () => {
+        this.pollNewOrders(router);
+      };
+      socketOrderCreatedHandler = () => {
+        this.pollNewOrders(router);
+      };
+
+      socket.on('connect', socketConnectHandler);
+      socket.on('order:new', socketOrderCreatedHandler);
+    },
+    unbindRealtimeChannel() {
+      const socket = activeSocket || getSocket();
+      if (socket && socketConnectHandler) {
+        socket.off('connect', socketConnectHandler);
+      }
+      if (socket && socketOrderCreatedHandler) {
+        socket.off('order:new', socketOrderCreatedHandler);
+      }
+
+      activeSocket = null;
+      socketConnectHandler = null;
+      socketOrderCreatedHandler = null;
     },
     shouldIncludeByRole(raw) {
       if (!isUnreadRaw(raw)) return false;
@@ -550,19 +634,12 @@ export const useNotificationStore = defineStore('notification', {
         .sort((a, b) => (a.created_stamp || 0) - (b.created_stamp || 0))
         .forEach((item) => {
           this.addDisplayedKey(item.id);
+          const alertResult = dispatchIncomingOrderAlert(item);
+          this.syncAlertCenterState();
 
-          ElNotification({
-            title: `${item.store_name} 来单提醒`,
-            message: buildNotificationMessage(item),
-            duration: 9000,
-            type: 'warning',
-            position: 'top-right',
-            offset: 78,
-            onClick: () => {
-              this.openNotification(item, router);
-            },
-          });
-          notifyIncomingOrderByAudio();
+          if (alertResult.foreground && isOrderAlertPageForeground()) {
+            this.emitIncomingOrderSync(item, 'foreground');
+          }
         });
 
       this.syncSeenStamp(nextItems);
@@ -635,7 +712,10 @@ export const useNotificationStore = defineStore('notification', {
     },
     async pollNewOrders(router) {
       if (!this.canUseNotification()) return;
-      if (this.polling) return;
+      if (this.polling) {
+        this.needsFollowUpPoll = true;
+        return;
+      }
 
       this.polling = true;
       try {
@@ -660,6 +740,10 @@ export const useNotificationStore = defineStore('notification', {
         // polling is best-effort
       } finally {
         this.polling = false;
+        if (this.needsFollowUpPoll) {
+          this.needsFollowUpPoll = false;
+          this.pollNewOrders(router);
+        }
       }
     },
     startPolling(router) {
@@ -693,14 +777,31 @@ export const useNotificationStore = defineStore('notification', {
         this.displayedKeys = [];
         this.lastSeenStamp = readSeenStamp(nextSessionKey);
         this.localReadKeys = readLocalReadKeys(nextSessionKey);
+        this.needsFollowUpPoll = false;
       }
+
+      setupIncomingOrderAudio(this.sessionKey);
+      this.audioVolume = getIncomingOrderAudioVolume();
+      this.audioVolumeRange = getIncomingOrderAudioVolumeRange();
+      initOrderAlertCenter({
+        onOpenOrder: (item) => this.openNotification(item, router),
+        onForegroundReturn: ({ latestItem }) => {
+          this.syncAlertCenterState();
+          if (latestItem) {
+            this.emitIncomingOrderSync(latestItem, 'return-to-foreground');
+          }
+        },
+        onDesktopPermissionHint: () => {
+          this.promptDesktopPermissionHint();
+          this.syncAlertCenterState();
+        },
+      });
+      this.syncAlertCenterState();
+      this.bindRealtimeChannel(token, router);
 
       if (this.initialized && !sessionChanged) return;
 
       this.initialized = true;
-      setupIncomingOrderAudio(this.sessionKey);
-      this.audioVolume = getIncomingOrderAudioVolume();
-      this.audioVolumeRange = getIncomingOrderAudioVolumeRange();
       this.startPolling(router);
     },
     clear() {
@@ -717,11 +818,18 @@ export const useNotificationStore = defineStore('notification', {
       this.localReadKeys = [];
       this.audioVolume = getIncomingOrderAudioVolume();
       this.audioVolumeRange = getIncomingOrderAudioVolumeRange();
+      this.desktopNotificationSupported = false;
+      this.desktopNotificationPermission = 'unsupported';
+      this.backgroundAttentionCount = 0;
+      this.needsFollowUpPoll = false;
 
       if (this.pollingTimer) {
         clearInterval(this.pollingTimer);
         this.pollingTimer = null;
       }
+
+      this.unbindRealtimeChannel();
+      clearOrderAlertCenter();
     },
   },
 });

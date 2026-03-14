@@ -6,6 +6,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 const { initSchema } = require('./utils/initSchema');
+const { joinSocketRooms } = require('./services/adminRealtimeService');
 
 const orderRoutes = require('./routes/orders');
 const packageRoutes = require('./routes/packages');
@@ -49,6 +50,10 @@ async function start() {
     } catch {
       next(new Error('Unauthorized socket'));
     }
+  });
+
+  io.on('connection', (socket) => {
+    joinSocketRooms(socket);
   });
 
   app.set('io', io);

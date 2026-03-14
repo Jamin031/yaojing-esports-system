@@ -1123,6 +1123,7 @@ const storeRefreshReasons = new Set(['store-created', 'store-updated', 'store-de
 const orderRefreshReasons = new Set([
   'data-updated',
   'order-created',
+  'order-alert-received',
   'order-deleted',
   'order-restored',
   'order-status-updated',
@@ -1157,7 +1158,8 @@ function onViewportResize() {
 }
 
 function onSyncEvent(event) {
-  if (isSelfAdminSyncEvent(event)) return;
+  const allowSameTab = event?.detail?.allow_same_tab === true || String(event?.detail?.allow_same_tab || '') === '1';
+  if (isSelfAdminSyncEvent(event) && !allowSameTab) return;
   const reason = String(event?.detail?.reason || '');
   if (storeRefreshReasons.has(reason)) {
     fetchBaseData().catch(() => null);
@@ -1167,6 +1169,10 @@ function onSyncEvent(event) {
     return;
   }
   if (!orderRefreshReasons.has(reason)) return;
+  const focusOrderId = normalizeOrderId(event?.detail?.focus_order_id);
+  if (focusOrderId) {
+    pendingFocusOrderId.value = focusOrderId;
+  }
   if (!loading.value) {
     fetchOrders();
   }

@@ -10,13 +10,13 @@ const {
 
 const router = express.Router();
 
-router.get('/', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(listNotifications));
-router.get('/orders', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(listOrderNotifications));
-router.post('/read', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(markNotificationsRead));
-router.patch('/read', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(markNotificationsRead));
-router.post('/orders/read', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(markNotificationsRead));
-router.patch('/orders/read', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(markNotificationsRead));
-router.post('/orders/read-all', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(markNotificationsRead));
-router.patch('/orders/read-all', requireAuth, requireRoles('super_admin', 'admin', 'store_owner'), asyncHandler(markNotificationsRead));
+router.get('/', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(listNotifications));
+router.get('/orders', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(listOrderNotifications));
+router.post('/read', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(markNotificationsRead));
+router.patch('/read', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(markNotificationsRead));
+router.post('/orders/read', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(markNotificationsRead));
+router.patch('/orders/read', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(markNotificationsRead));
+router.post('/orders/read-all', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(markNotificationsRead));
+router.patch('/orders/read-all', requireAuth, requireRoles('super_admin', 'admin', 'customer_service', 'store_owner'), asyncHandler(markNotificationsRead));
 
 module.exports = router;

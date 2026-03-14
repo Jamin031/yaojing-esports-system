@@ -95,7 +95,7 @@ function applyNotificationFieldPermissions(user, row) {
 }
 
 function canReadNotifications(user) {
-  if (!hasAnyRole(user, ['super_admin', 'admin', 'store_owner'])) {
+  if (!hasAnyRole(user, ['super_admin', 'admin', 'customer_service', 'store_owner'])) {
     return false;
   }
 
@@ -111,7 +111,7 @@ function buildNotificationScope(user, options = {}) {
   const filters = ['1=1'];
   const params = {};
 
-  if (hasAnyRole(user, ['super_admin', 'admin'])) {
+  if (hasAnyRole(user, ['super_admin', 'admin', 'customer_service'])) {
     if (reminderOnly) {
       filters.push(`n.type IN (${ADMIN_ORDER_NOTIFICATION_TYPES_SQL})`);
       filters.push(`(

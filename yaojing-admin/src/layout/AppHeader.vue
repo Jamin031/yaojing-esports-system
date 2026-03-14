@@ -45,6 +45,14 @@
           <span class="notify-volume-value">{{ notifyVolumePercent }}%</span>
         </div>
 
+        <div class="notify-system" @click.stop>
+          <span class="notify-volume-label">系统通知</span>
+          <el-tag size="small" :type="desktopNotifyTagType">{{ desktopNotifyStatusText }}</el-tag>
+          <el-button v-if="canRequestDesktopNotify" text size="small" @click="enableDesktopNotifications">
+            开启
+          </el-button>
+        </div>
+
         <div v-if="!notificationStore.items.length" class="notify-empty">暂无通知</div>
 
         <div v-for="item in notificationStore.items.slice(0, 8)" :key="item.id" class="notify-item" @click="goOrders(item)">
@@ -81,6 +89,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { ElMessage } from 'element-plus';
 import { useAppStore } from '../store/app';
 import { useAuthStore } from '../store/auth';
 import { useNotificationStore } from '../store/notifications';
@@ -146,6 +155,23 @@ const notifyVolumePercent = computed({
     notificationStore.setAudioVolume(Number(value || 0) / 100);
   },
 });
+const desktopNotifyStatusText = computed(() => {
+  if (!notificationStore.desktopNotificationSupported) return '不支持';
+  if (notificationStore.desktopNotificationPermission === 'granted') return '已开启';
+  if (notificationStore.desktopNotificationPermission === 'denied') return '已阻止';
+  return '未授权';
+});
+const desktopNotifyTagType = computed(() => {
+  if (!notificationStore.desktopNotificationSupported) return 'info';
+  if (notificationStore.desktopNotificationPermission === 'granted') return 'success';
+  if (notificationStore.desktopNotificationPermission === 'denied') return 'danger';
+  return 'warning';
+});
+const canRequestDesktopNotify = computed(
+  () =>
+    notificationStore.desktopNotificationSupported &&
+    notificationStore.desktopNotificationPermission === 'default',
+);
 
 async function goOrders(item) {
   await notificationStore.openNotification(item, router);
@@ -156,7 +182,24 @@ async function markRead(item) {
 }
 
 function notifyTitle(item) {
-  return `${item.store_name || '-'} 来单`;
+  return String(item?.type || '').toLowerCase().includes('completed')
+    ? `${item.store_name || '-'} 完单`
+    : `${item.store_name || '-'} 来单`;
+}
+
+async function enableDesktopNotifications() {
+  const permission = await notificationStore.requestDesktopPermissionAccess();
+  if (permission === 'granted') {
+    ElMessage.success('系统通知已开启');
+    return;
+  }
+  if (permission === 'denied') {
+    ElMessage.warning('浏览器已阻止系统通知，请在浏览器设置中手动开启');
+    return;
+  }
+  if (permission === 'unsupported') {
+    ElMessage.warning('当前浏览器环境不支持系统通知');
+  }
 }
 
 function logout() {
@@ -279,6 +322,13 @@ function logout() {
 }
 
 .notify-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.notify-system {
   display: flex;
   align-items: center;
   gap: 8px;

@@ -15,7 +15,12 @@ const {
   resolveStore,
   isOnlineStore,
 } = require('../utils/storeResolver');
-const { notifyNewOrder, notifyOrderFinished } = require('../services/notificationService');
+const {
+  notifyNewOrder,
+  notifyOrderFinished,
+  revokeFinishedNotification,
+} = require('../services/notificationService');
+const { emitNewOrderCreated } = require('../services/adminRealtimeService');
 
 const DEFAULT_PLATFORM_RATE = Number(process.env.DEFAULT_PLATFORM_RATE || 0.05);
 const ORDER_STATUSES = ['pending_contact', 'processing', 'problem', 'completed', 'cancelled'];
@@ -1224,10 +1229,16 @@ async function createOrder(req, res) {
     after: row,
   });
 
+  const notificationSource = row?.store_key || store.store_key || resolvedStore.store_key || null;
+  emitNewOrderCreated(req.app?.get('io'), {
+    order: row,
+    source: notificationSource,
+  });
+
   void notifyNewOrder({
     order: row,
     store,
-    source: row?.store_key || store.store_key || resolvedStore.store_key || null,
+    source: notificationSource,
     store_key: store.store_key || resolvedStore.store_key,
     request_store_key: resolvedStore.request_store_key || resolvedStore.store_key,
     game_name: req.body?.game_name || req.body?.game_type,
@@ -1342,6 +1353,7 @@ async function updateOrderStatus(req, res) {
   });
 
   const row = await fetchOrderById(id);
+  const notificationSource = row?.store_key || before.store_key || null;
   if (targetStatus === 'completed' && String(before.status) !== 'completed') {
     const completedType = buildCompletedNotificationType(before.status);
     const completedTitle = buildCompletedNotificationTitle(before.status);
@@ -1358,10 +1370,19 @@ async function updateOrderStatus(req, res) {
 
     void notifyOrderFinished({
       order: row || before,
-      source: row?.store_key || before.store_key || null,
-      store_key: row?.store_key || before.store_key,
+      source: notificationSource,
+      store_key: notificationSource,
       store_name: row?.store_name || before.store_name,
       completed_at: row?.updated_at || new Date(),
+    });
+  } else if (String(before.status) === 'completed' && targetStatus !== 'completed') {
+    void revokeFinishedNotification({
+      order: row || before,
+      source: notificationSource,
+      store_key: notificationSource,
+      store_name: row?.store_name || before.store_name,
+      updated_at: row?.updated_at || new Date(),
+      status: targetStatus,
     });
   }
 
@@ -1619,6 +1640,18 @@ async function withdrawProblemOrder(req, res) {
     source_amount: settlementAmount(row?.order_amount ?? target.order_amount, row?.revised_amount ?? target.revised_amount),
     source_order_time: row?.created_at || target.created_at || new Date(),
   });
+
+  if (String(before.status) === 'completed') {
+    const notificationSource = row?.store_key || before.store_key || null;
+    void revokeFinishedNotification({
+      order: row || before,
+      source: notificationSource,
+      store_key: notificationSource,
+      store_name: row?.store_name || before.store_name,
+      updated_at: row?.updated_at || new Date(),
+      status: fallbackStatus,
+    });
+  }
 
   await writeOperationLog(req, {
     action: 'orders.problem_withdraw',
@@ -1908,6 +1941,7 @@ async function batchUpdateOrderStatus(req, res) {
   const batchProblemRemark = pickIncomingProblemRemark(req.body || {}, null);
   const updatedIds = [];
   const finishedNotifications = [];
+  const revokedFinishedNotifications = [];
   await transaction(async (conn) => {
     for (const id of orderIds) {
       const [rows] = await conn.execute(
@@ -2010,8 +2044,12 @@ async function batchUpdateOrderStatus(req, res) {
         await resolveProblemOrder(id, req.user?.id, conn);
       }
 
+      let store = null;
+      if (targetStatus === 'completed' || previousStatus === 'completed') {
+        store = await getStoreById(rows[0].store_id, conn);
+      }
+
       if (targetStatus === 'completed' && previousStatus !== 'completed') {
-        const store = await getStoreById(rows[0].store_id, conn);
         const completedType = buildCompletedNotificationType(previousStatus);
         const completedTitle = buildCompletedNotificationTitle(previousStatus);
         await createNotification(completedTitle, `订单${id}已完成`, id, Number(rows[0].store_id || 0), conn, {
@@ -2038,6 +2076,24 @@ async function batchUpdateOrderStatus(req, res) {
           store,
           completed_at: new Date(),
         });
+      } else if (previousStatus === 'completed' && targetStatus !== 'completed') {
+        revokedFinishedNotifications.push({
+          order: {
+            id,
+            order_no: rows[0].order_no || null,
+            store_id: Number(rows[0].store_id || 0),
+            store_name: store?.name || null,
+            store_key: store?.store_key || null,
+            order_amount: rows[0].order_amount,
+            revised_amount: nextRevised,
+            updated_at: new Date(),
+            status: targetStatus,
+          },
+          source: store?.store_key || null,
+          store,
+          updated_at: new Date(),
+          status: targetStatus,
+        });
       }
 
       updatedIds.push(id);
@@ -2046,6 +2102,10 @@ async function batchUpdateOrderStatus(req, res) {
 
   finishedNotifications.forEach((payload) => {
     void notifyOrderFinished(payload);
+  });
+
+  revokedFinishedNotifications.forEach((payload) => {
+    void revokeFinishedNotification(payload);
   });
 
   await writeOperationLog(req, {

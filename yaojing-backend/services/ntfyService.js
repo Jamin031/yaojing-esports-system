@@ -11,8 +11,17 @@ function isValidSource(source) {
   return SOURCE_PATTERN.test(normalizeSource(source));
 }
 
+function normalizeSequenceId(sequenceId) {
+  return String(sequenceId || '').trim();
+}
+
 function getNtfyBaseUrl() {
   return String(process.env.NTFY_BASE_URL || '').trim().replace(/\/+$/, '');
+}
+
+function getNtfyTimeoutMs() {
+  const timeoutMs = Number(process.env.NTFY_TIMEOUT_MS || 5000);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000;
 }
 
 function normalizePriority(priority) {
@@ -52,7 +61,24 @@ function clipLogValue(value) {
   return value;
 }
 
-async function sendNtfyNotification({ topic, title, message, tags = [], priority = 'default' } = {}) {
+function buildAxiosConfig() {
+  return {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    timeout: getNtfyTimeoutMs(),
+    validateStatus: (status) => status >= 200 && status < 400,
+  };
+}
+
+async function sendNtfyNotification({
+  topic,
+  title,
+  message,
+  tags = [],
+  priority = 'default',
+  sequenceId = '',
+} = {}) {
   const baseUrl = getNtfyBaseUrl();
   if (!baseUrl) {
     console.warn('[ntfy] NTFY_BASE_URL is not configured, skipping notification', {
@@ -67,6 +93,7 @@ async function sendNtfyNotification({ topic, title, message, tags = [], priority
     return { sent: false, skipped: true, reason: 'topic_missing' };
   }
 
+  const normalizedSequenceId = normalizeSequenceId(sequenceId);
   const payload = {
     topic,
     title: String(title || '').trim(),
@@ -78,20 +105,23 @@ async function sendNtfyNotification({ topic, title, message, tags = [], priority
     payload.tags = tags;
   }
 
-  try {
-    await axios.post(`${baseUrl}/`, payload, {
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      timeout: Number(process.env.NTFY_TIMEOUT_MS || 5000),
-      validateStatus: (status) => status >= 200 && status < 400,
-    });
+  if (normalizedSequenceId) {
+    payload.sequence_id = normalizedSequenceId;
+  }
 
-    return { sent: true, skipped: false, topic };
+  try {
+    await axios.post(`${baseUrl}/`, payload, buildAxiosConfig());
+    return {
+      sent: true,
+      skipped: false,
+      topic,
+      sequence_id: normalizedSequenceId || null,
+    };
   } catch (error) {
     console.error('[ntfy] publish failed', {
       topic,
       title: payload.title,
+      sequence_id: normalizedSequenceId || null,
       status: error?.response?.status || null,
       message: error?.message || 'unknown_error',
       response: clipLogValue(
@@ -104,13 +134,65 @@ async function sendNtfyNotification({ topic, title, message, tags = [], priority
   }
 }
 
+async function deleteNtfyNotification({ topic, sequenceId } = {}) {
+  const baseUrl = getNtfyBaseUrl();
+  if (!baseUrl) {
+    console.warn('[ntfy] NTFY_BASE_URL is not configured, skipping delete', {
+      topic,
+      sequence_id: normalizeSequenceId(sequenceId) || null,
+    });
+    return { deleted: false, skipped: true, reason: 'base_url_missing' };
+  }
+
+  if (!topic) {
+    console.warn('[ntfy] topic is empty, skipping delete', {
+      sequence_id: normalizeSequenceId(sequenceId) || null,
+    });
+    return { deleted: false, skipped: true, reason: 'topic_missing' };
+  }
+
+  const normalizedSequenceId = normalizeSequenceId(sequenceId);
+  if (!normalizedSequenceId) {
+    console.warn('[ntfy] sequence_id is empty, skipping delete', { topic });
+    return { deleted: false, skipped: true, reason: 'sequence_id_missing' };
+  }
+
+  try {
+    await axios.delete(
+      `${baseUrl}/${encodeURIComponent(topic)}/${encodeURIComponent(normalizedSequenceId)}`,
+      buildAxiosConfig()
+    );
+    return {
+      deleted: true,
+      skipped: false,
+      topic,
+      sequence_id: normalizedSequenceId,
+    };
+  } catch (error) {
+    console.error('[ntfy] delete failed', {
+      topic,
+      sequence_id: normalizedSequenceId,
+      status: error?.response?.status || null,
+      message: error?.message || 'unknown_error',
+      response: clipLogValue(
+        typeof error?.response?.data === 'string'
+          ? error.response.data
+          : JSON.stringify(error?.response?.data || {})
+      ),
+    });
+    return { deleted: false, skipped: false, reason: 'request_failed' };
+  }
+}
+
 module.exports = {
   ONLINE_SOURCE,
   normalizeSource,
   isValidSource,
+  normalizeSequenceId,
   getAdminLiveTopic,
   getOwnerFinishedTopic,
   sendNtfyNotification,
+  deleteNtfyNotification,
   normalizeStoreKey: normalizeSource,
   isValidStoreKey: isValidSource,
 };
