@@ -2,7 +2,7 @@
 
 export function getStoresApi(params) {
   return request({
-    url: '/stores',
+    url: '/api/stores',
     method: 'get',
     params,
   });
@@ -10,7 +10,7 @@ export function getStoresApi(params) {
 
 export function createStoreApi(data) {
   return request({
-    url: '/stores',
+    url: '/api/stores',
     method: 'post',
     data,
   });
@@ -18,7 +18,7 @@ export function createStoreApi(data) {
 
 export function updateStoreApi(storeId, data) {
   return request({
-    url: `/stores/${storeId}`,
+    url: `/api/stores/${storeId}`,
     method: 'put',
     data,
   });
@@ -26,7 +26,7 @@ export function updateStoreApi(storeId, data) {
 
 export function deleteStoreApi(storeId) {
   return request({
-    url: `/stores/${storeId}`,
+    url: `/api/stores/${storeId}`,
     method: 'delete',
   });
 }

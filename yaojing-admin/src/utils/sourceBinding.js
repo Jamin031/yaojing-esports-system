@@ -1,6 +1,5 @@
 const STORE_BINDING_CACHE_KEY = 'yaojing_store_binding_cache_v1';
 const SOURCE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_-]{0,62}$/;
-const LOCAL_PREVIEW_ORIGIN = 'http://localhost:5174';
 const PROD_PREVIEW_ROOT_DOMAIN = 'yaojingclub.com';
 
 function normalizeText(value) {
@@ -56,6 +55,10 @@ function resolveDefaultSubdomain() {
   if (envProdRoot) return envProdRoot;
 
   return PROD_PREVIEW_ROOT_DOMAIN;
+}
+
+function resolveLocalPreviewOrigin() {
+  return normalizeText(import.meta.env.VITE_LOCAL_PREVIEW_ORIGIN || '').replace(/\/+$/, '');
 }
 
 function extractFromUrl(raw) {
@@ -225,9 +228,11 @@ export function resolveFullDomain(value, maybeSubdomain = '') {
 }
 
 export function resolveLocalPreviewUrl(sourceIdentifier) {
+  const origin = resolveLocalPreviewOrigin();
+  if (!origin) return '-';
   const id = extractFromDirtyText(sourceIdentifier);
-  if (!id) return `${LOCAL_PREVIEW_ORIGIN}/?store=`;
-  return `${LOCAL_PREVIEW_ORIGIN}/?store=${id}`;
+  if (!id) return `${origin}/?store=`;
+  return `${origin}/?store=${id}`;
 }
 
 export function resolveProdPreviewUrl(sourceIdentifier) {

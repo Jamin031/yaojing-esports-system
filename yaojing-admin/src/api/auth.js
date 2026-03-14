@@ -1,8 +1,11 @@
-﻿import request from '../utils/request';
+import request from '../utils/request';
+
+const LOGIN_API_URL = '/api/auth/login';
+const PROFILE_API_URL = '/api/auth/profile';
 
 export function loginApi(payload) {
   return request({
-    url: '/auth/login',
+    url: LOGIN_API_URL,
     method: 'post',
     data: {
       username: payload.username,
@@ -13,7 +16,7 @@ export function loginApi(payload) {
 
 export function getProfileApi() {
   return request({
-    url: '/auth/profile',
+    url: PROFILE_API_URL,
     method: 'get',
   });
 }

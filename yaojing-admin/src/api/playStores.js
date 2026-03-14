@@ -2,7 +2,7 @@
 
 export function getPlayStoresApi(params) {
   return request({
-    url: '/play-stores',
+    url: '/api/play-stores',
     method: 'get',
     params,
   });
@@ -10,7 +10,7 @@ export function getPlayStoresApi(params) {
 
 export function createPlayStoreApi(data) {
   return request({
-    url: '/play-stores',
+    url: '/api/play-stores',
     method: 'post',
     data,
   });
@@ -18,7 +18,7 @@ export function createPlayStoreApi(data) {
 
 export function updatePlayStoreApi(id, data) {
   return request({
-    url: `/play-stores/${id}`,
+    url: `/api/play-stores/${id}`,
     method: 'put',
     data,
   });
@@ -26,7 +26,7 @@ export function updatePlayStoreApi(id, data) {
 
 export function deletePlayStoreApi(id) {
   return request({
-    url: `/play-stores/${id}`,
+    url: `/api/play-stores/${id}`,
     method: 'delete',
   });
 }

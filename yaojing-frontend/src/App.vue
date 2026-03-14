@@ -141,8 +141,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import 'element-plus/es/components/message/style/css'
-import request from '@/utils/request'
 import { createOrder } from '@/api/orders'
+import { checkHealth } from '@/api/system'
 import { resolveStoreKey } from '@/utils/storeSource'
 import AppNavbar from './components/AppNavbar.vue'
 import PricingStretchGrid from './components/PricingStretchGrid.vue'
@@ -295,7 +295,7 @@ onMounted(async () => {
   })
 
   try {
-    await request.get('/api/health')
+    await checkHealth()
   } catch (err) {
     console.error('Health check failed:', err)
   }

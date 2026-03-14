@@ -2,7 +2,7 @@
 
 export function getStatsApi(params) {
   return request({
-    url: '/stats/overview',
+    url: '/api/stats/overview',
     method: 'get',
     params,
   });

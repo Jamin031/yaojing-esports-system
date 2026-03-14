@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { ElMessage } from 'element-plus';
+import { isLoginRequestURL, resolveApiConfig, resolveApiRequestURL } from './apiBase';
 import { clearRolePermissionTemplateCache } from './permissionTemplateCache';
 import { clearAuthCache, getToken } from './token';
 import {
@@ -9,39 +10,7 @@ import {
   unregisterPendingRequestController,
 } from './authFlow';
 
-function resolveApiBaseURL() {
-  const raw = String(import.meta.env.VITE_API_BASE_URL || '/api').trim();
-  if (!raw) return '/api';
-  return raw.replace(/\/+$/, '');
-}
-
-function resolveBasePath(baseURL) {
-  const raw = String(baseURL || '').trim();
-  if (!raw) return '';
-
-  if (raw.startsWith('/')) {
-    return raw.replace(/\/+$/, '');
-  }
-
-  try {
-    const parsed = new URL(raw);
-    return String(parsed.pathname || '').replace(/\/+$/, '');
-  } catch {
-    return '';
-  }
-}
-
-const API_BASE_URL = resolveApiBaseURL();
-const API_BASE_PATH = resolveBasePath(API_BASE_URL);
-
-function normalizeRequestUrl(url) {
-  const value = String(url || '').trim();
-  if (!value) return value;
-  if (!API_BASE_PATH || !value.startsWith('/')) return value;
-  if (value === API_BASE_PATH) return '/';
-  if (!value.startsWith(`${API_BASE_PATH}/`)) return value;
-  return value.slice(API_BASE_PATH.length) || '/';
-}
+const API_CONFIG = resolveApiConfig();
 
 function normalizeText(value) {
   return String(value || '')
@@ -67,7 +36,7 @@ function resolveLoginErrorMessage(rawMessage) {
 }
 
 const request = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: API_CONFIG.axiosBaseURL,
   timeout: 15000,
 });
 
@@ -86,10 +55,14 @@ function cleanupAbortController(config) {
   delete config.__abortController;
 }
 
+function shouldSuppressErrorMessage(config) {
+  return config?.silent === true || config?.meta?.silent === true;
+}
+
 request.interceptors.request.use(
   (config) => {
     if (typeof config.url === 'string') {
-      config.url = normalizeRequestUrl(config.url);
+      config.url = resolveApiRequestURL(config.url, API_CONFIG);
     }
     attachAbortController(config);
     config.headers = config.headers || {};
@@ -124,7 +97,8 @@ request.interceptors.response.use(
     const status = error?.response?.status;
     const message = error?.response?.data?.message || '请求失败，请稍后重试';
     const requestUrl = normalizeText(error?.config?.url);
-    const isLoginApi = requestUrl.includes('/auth/login');
+    const isLoginApi = isLoginRequestURL(requestUrl, API_CONFIG);
+    const suppressErrorMessage = shouldSuppressErrorMessage(error?.config);
 
     if (status === 401) {
       if (isLoginApi) {
@@ -145,8 +119,14 @@ request.interceptors.response.use(
         }
       }
     } else if (status === 403) {
+      if (suppressErrorMessage) {
+        return Promise.reject(error);
+      }
       ElMessage.error('权限不足');
     } else {
+      if (suppressErrorMessage) {
+        return Promise.reject(error);
+      }
       ElMessage.error(message);
     }
 

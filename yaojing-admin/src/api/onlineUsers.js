@@ -2,7 +2,7 @@
 
 export function getOnlineUsersApi(params) {
   return request({
-    url: '/online-users',
+    url: '/api/online-users',
     method: 'get',
     params,
   });

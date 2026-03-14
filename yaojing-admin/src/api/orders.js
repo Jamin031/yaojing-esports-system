@@ -2,7 +2,7 @@
 
 export function getOrdersApi(params) {
   return request({
-    url: '/orders',
+    url: '/api/orders',
     method: 'get',
     params,
   });
@@ -10,7 +10,7 @@ export function getOrdersApi(params) {
 
 export function createOrderApi(data) {
   return request({
-    url: '/orders',
+    url: '/api/orders',
     method: 'post',
     data,
   });
@@ -18,7 +18,7 @@ export function createOrderApi(data) {
 
 export function updateOrderStatusApi(orderId, status) {
   return request({
-    url: `/orders/${orderId}/status`,
+    url: `/api/orders/${orderId}/status`,
     method: 'patch',
     data: { status },
   });
@@ -27,7 +27,7 @@ export function updateOrderStatusApi(orderId, status) {
 export function updateOrderRemarkApi(orderId, remark) {
   const content = String(remark ?? '');
   return request({
-    url: `/orders/${orderId}/remark`,
+    url: `/api/orders/${orderId}/remark`,
     method: 'patch',
     data: {
       remark: content,
@@ -40,7 +40,7 @@ export function updateOrderRemarkApi(orderId, remark) {
 
 export function assignOrderPlayStoreApi(orderId, playStoreId) {
   return request({
-    url: `/orders/${orderId}/assign-play-store`,
+    url: `/api/orders/${orderId}/assign-play-store`,
     method: 'patch',
     data: {
       play_store_id: playStoreId,
@@ -52,7 +52,7 @@ export function assignOrderPlayStoreApi(orderId, playStoreId) {
 
 export function updateOrderEffectiveApi(orderId, isEffective) {
   return request({
-    url: `/orders/${orderId}/effective`,
+    url: `/api/orders/${orderId}/effective`,
     method: 'patch',
     data: { is_effective: isEffective },
   });
@@ -60,21 +60,21 @@ export function updateOrderEffectiveApi(orderId, isEffective) {
 
 export function deleteOrderApi(orderId) {
   return request({
-    url: `/orders/${orderId}`,
+    url: `/api/orders/${orderId}`,
     method: 'delete',
   });
 }
 
 export function restoreOrderApi(orderId) {
   return request({
-    url: `/orders/${orderId}/restore`,
+    url: `/api/orders/${orderId}/restore`,
     method: 'patch',
   });
 }
 
 export function batchDeleteOrdersApi(orderIds) {
   return request({
-    url: '/orders/batch-delete',
+    url: '/api/orders/batch-delete',
     method: 'post',
     data: { order_ids: orderIds },
   });
@@ -82,7 +82,7 @@ export function batchDeleteOrdersApi(orderIds) {
 
 export function batchUpdateOrderStatusApi(orderIds, status) {
   return request({
-    url: '/orders/batch-status',
+    url: '/api/orders/batch-status',
     method: 'patch',
     data: { order_ids: orderIds, status },
   });
@@ -90,7 +90,7 @@ export function batchUpdateOrderStatusApi(orderIds, status) {
 
 export function updateProblemOrderApi(orderId, payload) {
   return request({
-    url: `/orders/${orderId}/problem`,
+    url: `/api/orders/${orderId}/problem`,
     method: 'patch',
     data: payload,
   });
@@ -98,7 +98,7 @@ export function updateProblemOrderApi(orderId, payload) {
 
 export function completeProblemOrderApi(orderId, payload = {}) {
   return request({
-    url: `/orders/${orderId}/problem/complete`,
+    url: `/api/orders/${orderId}/problem/complete`,
     method: 'patch',
     data: payload,
   });
@@ -106,7 +106,7 @@ export function completeProblemOrderApi(orderId, payload = {}) {
 
 export function revokeProblemOrderApi(orderId, payload = {}) {
   return request({
-    url: `/orders/${orderId}/problem/withdraw`,
+    url: `/api/orders/${orderId}/problem/withdraw`,
     method: 'patch',
     data: payload,
   });
@@ -114,7 +114,7 @@ export function revokeProblemOrderApi(orderId, payload = {}) {
 
 export function permanentDeleteOrderApi(orderId) {
   return request({
-    url: `/orders/${orderId}/permanent`,
+    url: `/api/orders/${orderId}/permanent`,
     method: 'delete',
   });
 }

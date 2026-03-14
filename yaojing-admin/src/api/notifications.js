@@ -1,32 +1,12 @@
 import request from '../utils/request';
-import axios from 'axios';
 import { isApiSuccess } from '../utils/api';
-import { getToken } from '../utils/token';
-
-function resolveApiBaseURL() {
-  const raw = String(import.meta.env.VITE_API_BASE_URL || '/api').trim();
-  if (!raw) return '/api';
-  return raw.replace(/\/+$/, '');
-}
-
-const silentRequest = axios.create({
-  baseURL: resolveApiBaseURL(),
-  timeout: 12000,
-});
-
-silentRequest.interceptors.request.use((config) => {
-  const token = getToken();
-  if (token) {
-    config.headers = config.headers || {};
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
 
 async function requestSilently(config) {
   try {
-    const resp = await silentRequest(config);
-    const payload = resp?.data;
+    const payload = await request({
+      ...config,
+      silent: true,
+    });
     if (isApiSuccess(payload)) {
       return payload;
     }
@@ -66,7 +46,7 @@ async function markReadSilently(orderId, notificationId) {
   if (!readPayload) return false;
 
   const payload = await requestSilently({
-    url: '/notifications/read',
+    url: '/api/notifications/read',
     method: 'post',
     data: readPayload,
   });
@@ -76,7 +56,7 @@ async function markReadSilently(orderId, notificationId) {
 
 export function getOrderNotificationsApi(params) {
   return request({
-    url: '/notifications/orders',
+    url: '/api/notifications/orders',
     method: 'get',
     params,
   });
@@ -84,7 +64,8 @@ export function getOrderNotificationsApi(params) {
 
 export function markOrderNotificationReadApi(payload = {}) {
   const orderId = payload.order_id ?? payload.orderId ?? null;
-  const notificationId = payload.notification_id ?? payload.notificationId ?? payload.notify_id ?? payload.notifyId ?? payload.id ?? null;
+  const notificationId =
+    payload.notification_id ?? payload.notificationId ?? payload.notify_id ?? payload.notifyId ?? payload.id ?? null;
   return markReadSilently(orderId, notificationId);
 }
 
