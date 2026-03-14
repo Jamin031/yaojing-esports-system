@@ -2,6 +2,7 @@ USE xbdj_saas;
 
 -- stores
 ALTER TABLE stores ADD COLUMN IF NOT EXISTS domain_prefix VARCHAR(100) NULL;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS store_key VARCHAR(100) NULL;
 
 -- users
 ALTER TABLE users ADD COLUMN IF NOT EXISTS real_name VARCHAR(100) NULL;

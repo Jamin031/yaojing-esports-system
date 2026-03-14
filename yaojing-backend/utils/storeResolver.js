@@ -4,7 +4,7 @@ const STORE_SOURCE_NOT_FOUND_MESSAGE = '来源网吧不存在，请先在后台�
 const ONLINE_STORE_KEY = 'online';
 const DEFAULT_ONLINE_STORE_NAME = process.env.DEFAULT_ONLINE_STORE_NAME || '线上用户订单';
 const STORE_COMPARABLE_CLEAN_RE = /[^a-z0-9\u4e00-\u9fa5]/g;
-const STORE_SELECT_FIELDS = `id, name, domain_prefix, subdomain, commission_rate`;
+const STORE_SELECT_FIELDS = `id, name, store_key, domain_prefix, subdomain, commission_rate`;
 const PRODUCTION_ROOT_DOMAIN = String(process.env.PRODUCTION_ROOT_DOMAIN || 'yaojingclub.com')
   .trim()
   .toLowerCase();
@@ -121,6 +121,10 @@ function firstNonEmpty(...values) {
   return '';
 }
 
+function resolvePersistedStoreKey(store = {}) {
+  return sanitizeStoreKey(firstNonEmpty(store.store_key, store.domain_prefix, store.subdomain, store.name));
+}
+
 function normalizeStoreDomain(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (!raw) {
@@ -171,7 +175,7 @@ function isOnlineStore(store = null) {
   if (!store) {
     return false;
   }
-  return isOnlineStoreKey(store.domain_prefix) || isOnlineStoreKey(store.subdomain);
+  return isOnlineStoreKey(store.store_key) || isOnlineStoreKey(store.domain_prefix) || isOnlineStoreKey(store.subdomain);
 }
 
 async function findStoreById(storeId) {
@@ -201,7 +205,8 @@ async function findStoreByPrefix(prefix) {
      FROM stores
      WHERE is_deleted = 0
        AND (
-         LOWER(COALESCE(domain_prefix, '')) = :prefix
+         LOWER(COALESCE(store_key, '')) = :prefix
+         OR LOWER(COALESCE(domain_prefix, '')) = :prefix
          OR LOWER(COALESCE(subdomain, '')) = :prefix
        )
      LIMIT 1`,
@@ -221,7 +226,8 @@ async function findStoreByPrefix(prefix) {
      FROM stores
      WHERE is_deleted = 0
        AND (
-         REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE(domain_prefix, '')), '-', ''), '_', ''), '.', ''), ' ', '') = :compact
+         REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE(store_key, '')), '-', ''), '_', ''), '.', ''), ' ', '') = :compact
+         OR REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE(domain_prefix, '')), '-', ''), '_', ''), '.', ''), ' ', '') = :compact
          OR REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE(subdomain, '')), '-', ''), '_', ''), '.', ''), ' ', '') = :compact
        )
      LIMIT 1`,
@@ -255,27 +261,19 @@ async function findStoreBySourceKey(storeKey) {
     return null;
   }
 
-  const subdomainRows = await query(
+  const rows = await query(
     `SELECT ${STORE_SELECT_FIELDS}
      FROM stores
      WHERE is_deleted = 0
-       AND LOWER(COALESCE(subdomain, '')) = :key
+       AND (
+         LOWER(COALESCE(store_key, '')) = :key
+         OR LOWER(COALESCE(subdomain, '')) = :key
+         OR LOWER(COALESCE(domain_prefix, '')) = :key
+       )
      LIMIT 1`,
     { key }
   );
-  if (subdomainRows[0]) {
-    return subdomainRows[0];
-  }
-
-  const domainPrefixRows = await query(
-    `SELECT ${STORE_SELECT_FIELDS}
-     FROM stores
-     WHERE is_deleted = 0
-       AND LOWER(COALESCE(domain_prefix, '')) = :key
-     LIMIT 1`,
-    { key }
-  );
-  return domainPrefixRows[0] || null;
+  return rows[0] || null;
 }
 
 async function findOnlineStore(includeDeleted = false) {
@@ -283,7 +281,8 @@ async function findOnlineStore(includeDeleted = false) {
     `SELECT ${STORE_SELECT_FIELDS}, is_deleted
      FROM stores
      WHERE (
-       LOWER(COALESCE(domain_prefix, '')) = :online_key
+       LOWER(COALESCE(store_key, '')) = :online_key
+       OR LOWER(COALESCE(domain_prefix, '')) = :online_key
        OR LOWER(COALESCE(subdomain, '')) = :online_key
      )
      ${includeDeleted ? '' : 'AND is_deleted = 0'}
@@ -323,10 +322,11 @@ async function resolveOnlineFallbackStore() {
 
   try {
     const insertResult = await query(
-      `INSERT INTO stores (name, subdomain, domain_prefix, commission_rate, is_deleted)
-       VALUES (:name, :subdomain, :domain_prefix, :commission_rate, 0)`,
+      `INSERT INTO stores (name, store_key, subdomain, domain_prefix, commission_rate, is_deleted)
+       VALUES (:name, :store_key, :subdomain, :domain_prefix, :commission_rate, 0)`,
       {
         name: DEFAULT_ONLINE_STORE_NAME,
+        store_key: ONLINE_STORE_KEY,
         subdomain: ONLINE_STORE_KEY,
         domain_prefix: ONLINE_STORE_KEY,
         commission_rate: 0,
@@ -393,7 +393,8 @@ async function resolveStore(req) {
         ok: true,
         store,
         store_id: Number(store.id),
-        store_key: storeKey,
+        store_key: resolvePersistedStoreKey(store),
+        request_store_key: storeKey,
         source,
         fallback: false,
         fallback_reason: '',
@@ -416,7 +417,8 @@ async function resolveStore(req) {
         ok: true,
         store: directStore,
         store_id: Number(directStore.id),
-        store_key: normalizeStoreKey(directStore.domain_prefix || directStore.subdomain || directStore.name || ''),
+        store_key: resolvePersistedStoreKey(directStore),
+        request_store_key: storeKey,
         source: 'store_id',
         fallback: false,
         fallback_reason: '',
@@ -432,6 +434,7 @@ async function resolveStore(req) {
       store: null,
       store_id: null,
       store_key: storeKey || ONLINE_STORE_KEY,
+      request_store_key: storeKey,
       source: source || 'fallback.online',
       fallback: true,
       fallback_reason: storeKey ? 'store_not_found' : 'store_key_missing',
@@ -443,7 +446,8 @@ async function resolveStore(req) {
     ok: true,
     store: onlineStore,
     store_id: Number(onlineStore.id),
-    store_key: storeKey || ONLINE_STORE_KEY,
+    store_key: resolvePersistedStoreKey(onlineStore) || ONLINE_STORE_KEY,
+    request_store_key: storeKey,
     source: source || 'fallback.online',
     fallback: true,
     fallback_reason: storeKey ? 'store_not_found' : 'store_key_missing',

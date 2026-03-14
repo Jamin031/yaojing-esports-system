@@ -7,12 +7,14 @@ USE yaojing_saas;
 CREATE TABLE IF NOT EXISTS stores (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   name VARCHAR(120) NOT NULL,
+  store_key VARCHAR(80) NULL,
   subdomain VARCHAR(80) NULL,
   domain_prefix VARCHAR(80) NULL,
   commission_rate DECIMAL(6,4) NOT NULL DEFAULT 0.0500,
   is_deleted TINYINT(1) NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_stores_store_key (store_key),
   UNIQUE KEY uk_stores_subdomain (subdomain),
   UNIQUE KEY uk_stores_domain_prefix (domain_prefix)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

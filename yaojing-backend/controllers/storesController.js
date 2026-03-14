@@ -13,6 +13,10 @@ function normalizeDomainPrefix(input) {
   return raw.replace(/[^a-z0-9-]/g, '');
 }
 
+function normalizeStoreKey(input) {
+  return normalizeDomainPrefix(input);
+}
+
 function parseCommissionRate(value, fallback = null) {
   if (typeof value === 'undefined' || value === null || value === '') {
     return fallback;
@@ -35,8 +39,8 @@ function isReservedSourcePrefix(value) {
   return RESERVED_SOURCE_PREFIXES.has(normalized);
 }
 
-function validateSourcePrefixPair(domainPrefix, subdomain) {
-  if (isReservedSourcePrefix(domainPrefix) || isReservedSourcePrefix(subdomain)) {
+function validateStoreIdentifiers(domainPrefix, subdomain, storeKey) {
+  if (isReservedSourcePrefix(domainPrefix) || isReservedSourcePrefix(subdomain) || isReservedSourcePrefix(storeKey)) {
     return 'admin 前缀为系统后台保留标识，不能用于网吧来源';
   }
   return '';
@@ -44,6 +48,7 @@ function validateSourcePrefixPair(domainPrefix, subdomain) {
 
 function isOnlineFallbackStore(store = {}) {
   return (
+    normalizeStoreIdentifier(store.store_key) === 'online' ||
     normalizeStoreIdentifier(store.subdomain) === 'online' ||
     normalizeStoreIdentifier(store.domain_prefix) === 'online'
   );
@@ -84,6 +89,7 @@ async function listStores(req, res) {
     `SELECT
       s.id,
       s.name,
+      s.store_key,
       s.subdomain,
       s.domain_prefix,
       s.commission_rate,
@@ -92,7 +98,7 @@ async function listStores(req, res) {
      FROM stores s
      LEFT JOIN orders o ON o.store_id = s.id
      WHERE ${where}
-     GROUP BY s.id, s.name, s.subdomain, s.domain_prefix, s.commission_rate
+     GROUP BY s.id, s.name, s.store_key, s.subdomain, s.domain_prefix, s.commission_rate
      ORDER BY s.id DESC`,
     params
   );
@@ -113,10 +119,13 @@ async function createStore(req, res) {
   const commissionRate = parseCommissionRate(req.body?.commission_rate, 0.05);
   const rawDomainPrefix = req.body?.domain_prefix;
   const rawSubdomain = req.body?.subdomain;
+  const rawStoreKey = req.body?.store_key;
   const hasDomainPrefix = Object.prototype.hasOwnProperty.call(req.body || {}, 'domain_prefix');
   const hasSubdomain = Object.prototype.hasOwnProperty.call(req.body || {}, 'subdomain');
+  const hasStoreKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'store_key');
   const domainPrefix = normalizeDomainPrefix(hasDomainPrefix ? rawDomainPrefix : rawSubdomain || '');
   const subdomain = normalizeDomainPrefix(hasSubdomain ? rawSubdomain : rawDomainPrefix || '');
+  const storeKey = normalizeStoreKey(hasStoreKey ? rawStoreKey : domainPrefix || subdomain);
 
   if (!name) {
     return fail(res, 'Store name is required', 400);
@@ -124,18 +133,22 @@ async function createStore(req, res) {
   if (!Number.isFinite(commissionRate)) {
     return fail(res, 'Invalid commission_rate', 400);
   }
+  if (!storeKey) {
+    return fail(res, 'store_key is required', 400);
+  }
 
-  const reservedPrefixError = validateSourcePrefixPair(domainPrefix, subdomain);
+  const reservedPrefixError = validateStoreIdentifiers(domainPrefix, subdomain, storeKey);
   if (reservedPrefixError) {
     return fail(res, reservedPrefixError, 400);
   }
 
   try {
     await query(
-      `INSERT INTO stores (name, commission_rate, subdomain, domain_prefix)
-       VALUES (:name, :commission_rate, :subdomain, :domain_prefix)`,
+      `INSERT INTO stores (name, store_key, commission_rate, subdomain, domain_prefix)
+       VALUES (:name, :store_key, :commission_rate, :subdomain, :domain_prefix)`,
       {
         name: String(name),
+        store_key: storeKey,
         commission_rate: commissionRate,
         subdomain: subdomain || null,
         domain_prefix: domainPrefix || null,
@@ -143,13 +156,13 @@ async function createStore(req, res) {
     );
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      return fail(res, 'domain_prefix or subdomain already exists', 409);
+      return fail(res, 'store_key、domain_prefix 或 subdomain 已存在', 409);
     }
     throw error;
   }
 
   const rows = await query(
-    `SELECT id, name, subdomain, domain_prefix, commission_rate
+    `SELECT id, name, store_key, subdomain, domain_prefix, commission_rate
      FROM stores
      WHERE name = :name
      ORDER BY id DESC
@@ -175,6 +188,7 @@ async function updateStore(req, res) {
   const commissionRate = parseCommissionRate(req.body?.commission_rate);
   const hasDomainPrefix = Object.prototype.hasOwnProperty.call(req.body || {}, 'domain_prefix');
   const hasSubdomain = Object.prototype.hasOwnProperty.call(req.body || {}, 'subdomain');
+  const hasStoreKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'store_key');
   const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
   const hasCommissionRate = Object.prototype.hasOwnProperty.call(req.body || {}, 'commission_rate');
 
@@ -183,7 +197,7 @@ async function updateStore(req, res) {
   }
 
   const beforeRows = await query(
-    `SELECT id, name, subdomain, domain_prefix, commission_rate
+    `SELECT id, name, store_key, subdomain, domain_prefix, commission_rate
      FROM stores
      WHERE id = :id AND is_deleted = 0
      LIMIT 1`,
@@ -200,13 +214,20 @@ async function updateStore(req, res) {
   const nextSubdomain = hasSubdomain
     ? normalizeDomainPrefix(req.body?.subdomain) || null
     : before.subdomain;
+  const nextStoreKey = hasStoreKey
+    ? normalizeStoreKey(req.body?.store_key) || nextDomainPrefix || nextSubdomain || null
+    : normalizeStoreKey(before.store_key) || nextDomainPrefix || nextSubdomain || null;
 
-  const reservedPrefixError = validateSourcePrefixPair(nextDomainPrefix, nextSubdomain);
+  if (!nextStoreKey) {
+    return fail(res, 'store_key is required', 400);
+  }
+
+  const reservedPrefixError = validateStoreIdentifiers(nextDomainPrefix, nextSubdomain, nextStoreKey);
   if (reservedPrefixError) {
     return fail(res, reservedPrefixError, 400);
   }
 
-  if (!hasName && !hasCommissionRate && !hasDomainPrefix && !hasSubdomain) {
+  if (!hasName && !hasCommissionRate && !hasDomainPrefix && !hasSubdomain && !hasStoreKey) {
     return ok(res, before, 'store updated');
   }
 
@@ -214,6 +235,7 @@ async function updateStore(req, res) {
     await query(
       `UPDATE stores
        SET name = COALESCE(:name, name),
+           store_key = :store_key,
            commission_rate = COALESCE(:commission_rate, commission_rate),
            subdomain = :subdomain,
            domain_prefix = :domain_prefix,
@@ -222,6 +244,7 @@ async function updateStore(req, res) {
       {
         id,
         name: typeof name === 'undefined' ? null : String(name),
+        store_key: nextStoreKey,
         commission_rate: hasCommissionRate ? commissionRate : null,
         subdomain: nextSubdomain,
         domain_prefix: nextDomainPrefix,
@@ -229,13 +252,13 @@ async function updateStore(req, res) {
     );
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      return fail(res, 'domain_prefix or subdomain already exists', 409);
+      return fail(res, 'store_key、domain_prefix 或 subdomain 已存在', 409);
     }
     throw error;
   }
 
   const afterRows = await query(
-    `SELECT id, name, subdomain, domain_prefix, commission_rate
+    `SELECT id, name, store_key, subdomain, domain_prefix, commission_rate
      FROM stores
      WHERE id = :id
      LIMIT 1`,
@@ -244,6 +267,7 @@ async function updateStore(req, res) {
   const after = toStoreWithDomainPreview(afterRows[0] || null);
   const commissionChanged = Number(before.commission_rate) !== Number(after?.commission_rate);
   const domainChanged =
+    String(before.store_key || '') !== String(after?.store_key || '') ||
     String(before.domain_prefix || '') !== String(after?.domain_prefix || '') ||
     String(before.subdomain || '') !== String(after?.subdomain || '');
   const nameChanged = String(before.name || '') !== String(after?.name || '');
@@ -273,7 +297,7 @@ async function updateStoreDomain(req, res) {
   }
 
   const beforeRows = await query(
-    `SELECT id, name, subdomain, domain_prefix
+    `SELECT id, name, store_key, subdomain, domain_prefix
      FROM stores
      WHERE id = :id AND is_deleted = 0
      LIMIT 1`,
@@ -292,8 +316,13 @@ async function updateStoreDomain(req, res) {
   const nextSubdomain = hasSubdomain
     ? incomingSubdomain || null
     : incomingDomainPrefix || before.subdomain || null;
+  const nextStoreKey = normalizeStoreKey(before.store_key) || nextDomainPrefix || nextSubdomain || null;
 
-  const reservedPrefixError = validateSourcePrefixPair(nextDomainPrefix, nextSubdomain);
+  if (!nextStoreKey) {
+    return fail(res, 'store_key is required', 400);
+  }
+
+  const reservedPrefixError = validateStoreIdentifiers(nextDomainPrefix, nextSubdomain, nextStoreKey);
   if (reservedPrefixError) {
     return fail(res, reservedPrefixError, 400);
   }
@@ -301,25 +330,27 @@ async function updateStoreDomain(req, res) {
   try {
     await query(
       `UPDATE stores
-       SET domain_prefix = :domain_prefix,
+       SET store_key = :store_key,
+           domain_prefix = :domain_prefix,
            subdomain = :subdomain,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = :id AND is_deleted = 0`,
       {
         id,
+        store_key: nextStoreKey,
         domain_prefix: nextDomainPrefix,
         subdomain: nextSubdomain,
       }
     );
   } catch (error) {
     if (isDuplicateKeyError(error)) {
-      return fail(res, 'domain_prefix or subdomain already exists', 409);
+      return fail(res, 'store_key、domain_prefix 或 subdomain 已存在', 409);
     }
     throw error;
   }
 
   const afterRows = await query(
-    `SELECT id, name, subdomain, domain_prefix
+    `SELECT id, name, store_key, subdomain, domain_prefix
      FROM stores
      WHERE id = :id
      LIMIT 1`,
@@ -342,7 +373,7 @@ async function updateStoreDomain(req, res) {
 async function deleteStore(req, res) {
   const id = Number(req.params.id);
   const beforeRows = await query(
-    `SELECT id, name, subdomain, domain_prefix, is_deleted
+    `SELECT id, name, store_key, subdomain, domain_prefix, is_deleted
      FROM stores
      WHERE id = :id
      LIMIT 1`,
@@ -358,7 +389,7 @@ async function deleteStore(req, res) {
 
   await query(`UPDATE stores SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = :id`, { id });
   const afterRows = await query(
-    `SELECT id, name, subdomain, domain_prefix, is_deleted
+    `SELECT id, name, store_key, subdomain, domain_prefix, is_deleted
      FROM stores
      WHERE id = :id
      LIMIT 1`,

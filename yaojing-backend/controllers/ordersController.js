@@ -15,6 +15,7 @@ const {
   resolveStore,
   isOnlineStore,
 } = require('../utils/storeResolver');
+const { notifyNewOrder, notifyOrderFinished } = require('../services/notificationService');
 
 const DEFAULT_PLATFORM_RATE = Number(process.env.DEFAULT_PLATFORM_RATE || 0.05);
 const ORDER_STATUSES = ['pending_contact', 'processing', 'problem', 'completed', 'cancelled'];
@@ -74,6 +75,16 @@ function hasOwn(target, key) {
   return Object.prototype.hasOwnProperty.call(target || {}, key);
 }
 
+function firstNonEmptyText(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) {
+      return text;
+    }
+  }
+  return '';
+}
+
 function pickBodyValueByKeys(body = {}, keys = []) {
   for (const key of keys) {
     if (hasOwn(body, key)) {
@@ -86,6 +97,10 @@ function pickBodyValueByKeys(body = {}, keys = []) {
 function normalizeNullableString(value) {
   const text = String(value ?? '').trim();
   return text || null;
+}
+
+function getRequestSourceDomain(req) {
+  return firstNonEmptyText(req.headers?.['x-forwarded-host'], req.headers?.host, req.hostname);
 }
 
 function normalizeAnonymousFlag(value) {
@@ -373,6 +388,7 @@ function toOrderListView(row) {
     order_no: row.order_no,
     store_id: row.store_id,
     store_name: row.store_name,
+    store_key: row.store_key,
     order_amount: row.order_amount,
     revised_amount: row.revised_amount,
     settlement_amount: row.settlement_amount,
@@ -489,6 +505,7 @@ function applyOrderFieldPermissions(user, order, options = {}) {
   if (!hasFieldPermission(user, 'orders:source_store')) {
     row.store_id = null;
     row.store_name = null;
+    row.store_key = null;
   }
   if (!hasFieldPermission(user, 'orders:assigned_play_shop')) {
     row.shop_id = null;
@@ -549,7 +566,7 @@ async function getStoreById(storeId, conn = null) {
 
   const executor = conn || { execute: (sql, params) => query(sql, params).then((rows) => [rows]) };
   const [rows] = await executor.execute(
-    `SELECT id, name, commission_rate
+    `SELECT id, name, store_key, subdomain, domain_prefix, commission_rate
      FROM stores
      WHERE id = ? AND is_deleted = 0
      LIMIT 1`,
@@ -582,6 +599,7 @@ async function fetchOrderById(id) {
       o.order_no,
       o.store_id,
       s.name AS store_name,
+      s.store_key,
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS contact,
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS customer_contact,
       o.customer_nickname,
@@ -982,6 +1000,7 @@ async function listOrders(req, res) {
       o.order_no,
       o.store_id,
       s.name AS store_name,
+      s.store_key,
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS contact,
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS customer_contact,
       o.customer_nickname,
@@ -1205,6 +1224,18 @@ async function createOrder(req, res) {
     after: row,
   });
 
+  void notifyNewOrder({
+    order: row,
+    store,
+    source: row?.store_key || store.store_key || resolvedStore.store_key || null,
+    store_key: store.store_key || resolvedStore.store_key,
+    request_store_key: resolvedStore.request_store_key || resolvedStore.store_key,
+    game_name: req.body?.game_name || req.body?.game_type,
+    service_name: req.body?.service_name || req.body?.service_type,
+    source_domain: getRequestSourceDomain(req),
+    source_identifier: resolvedStore.request_store_key || resolvedStore.store_key,
+  });
+
   return ok(res, applyOrderFieldPermissions(req.user, row), '订单创建成功');
 }
 
@@ -1323,6 +1354,14 @@ async function updateOrderStatus(req, res) {
       source_order_info: row?.order_info || before.order_info || null,
       source_amount: settlementAmount(row?.order_amount ?? before.order_amount, row?.revised_amount ?? before.revised_amount),
       source_order_time: row?.created_at || before.created_at || new Date(),
+    });
+
+    void notifyOrderFinished({
+      order: row || before,
+      source: row?.store_key || before.store_key || null,
+      store_key: row?.store_key || before.store_key,
+      store_name: row?.store_name || before.store_name,
+      completed_at: row?.updated_at || new Date(),
     });
   }
 
@@ -1868,11 +1907,13 @@ async function batchUpdateOrderStatus(req, res) {
   const batchOrderRemark = pickExplicitOrderRemark(req.body || {}, null);
   const batchProblemRemark = pickIncomingProblemRemark(req.body || {}, null);
   const updatedIds = [];
+  const finishedNotifications = [];
   await transaction(async (conn) => {
     for (const id of orderIds) {
       const [rows] = await conn.execute(
         `SELECT
           id,
+          order_no,
           status,
           store_id,
           contact,
@@ -1981,10 +2022,30 @@ async function batchUpdateOrderStatus(req, res) {
           source_amount: amount,
           source_order_time: rows[0].created_at || new Date(),
         });
+
+        finishedNotifications.push({
+          order: {
+            id,
+            order_no: rows[0].order_no || null,
+            store_id: Number(rows[0].store_id || 0),
+            store_name: store?.name || null,
+            store_key: store?.store_key || null,
+            order_amount: rows[0].order_amount,
+            revised_amount: nextRevised,
+            updated_at: new Date(),
+          },
+          source: store?.store_key || null,
+          store,
+          completed_at: new Date(),
+        });
       }
 
       updatedIds.push(id);
     }
+  });
+
+  finishedNotifications.forEach((payload) => {
+    void notifyOrderFinished(payload);
   });
 
   await writeOperationLog(req, {

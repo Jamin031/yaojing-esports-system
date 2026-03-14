@@ -136,22 +136,28 @@ async function ensureStoresTable() {
     CREATE TABLE IF NOT EXISTS stores (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       name VARCHAR(120) NOT NULL,
+      store_key VARCHAR(80) NULL,
       subdomain VARCHAR(80) NULL,
       domain_prefix VARCHAR(80) NULL,
       commission_rate DECIMAL(6,4) NOT NULL DEFAULT 0.0500,
       is_deleted TINYINT(1) NOT NULL DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_stores_store_key (store_key),
       UNIQUE KEY uk_stores_subdomain (subdomain),
       UNIQUE KEY uk_stores_domain_prefix (domain_prefix)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  await safeQuery(`ALTER TABLE stores ADD COLUMN store_key VARCHAR(80) NULL`);
   await safeQuery(`ALTER TABLE stores ADD COLUMN subdomain VARCHAR(80) NULL`);
   await safeQuery(`ALTER TABLE stores ADD COLUMN domain_prefix VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE stores ADD UNIQUE KEY uk_stores_store_key (store_key)`);
   await safeQuery(`ALTER TABLE stores ADD UNIQUE KEY uk_stores_subdomain (subdomain)`);
   await safeQuery(`ALTER TABLE stores ADD UNIQUE KEY uk_stores_domain_prefix (domain_prefix)`);
   await safeQuery(`UPDATE stores SET domain_prefix = subdomain WHERE (domain_prefix IS NULL OR domain_prefix = '') AND subdomain IS NOT NULL`);
+  await safeQuery(`UPDATE stores SET store_key = LOWER(domain_prefix) WHERE (store_key IS NULL OR store_key = '') AND domain_prefix IS NOT NULL AND domain_prefix <> ''`);
+  await safeQuery(`UPDATE stores SET store_key = LOWER(subdomain) WHERE (store_key IS NULL OR store_key = '') AND subdomain IS NOT NULL AND subdomain <> ''`);
 }
 
 async function ensurePlayShopsTable() {
@@ -806,14 +812,14 @@ async function loadRolePermissionTemplatesToRuntime() {
 
 async function seedBaseData() {
   await query(
-    `INSERT IGNORE INTO stores (id, name, subdomain, domain_prefix, commission_rate) VALUES
-    (1, 'Store-1', 'yishiguang', 'yishiguang', 0.0500),
-    (2, 'Store-2', 'shuguang', 'shuguang', 0.0400),
-    (3, 'Store-3', 'xinghe', 'xinghe', 0.0300)`
+    `INSERT IGNORE INTO stores (id, name, store_key, subdomain, domain_prefix, commission_rate) VALUES
+    (1, 'Store-1', 'yishiguang', 'yishiguang', 'yishiguang', 0.0500),
+    (2, 'Store-2', 'shuguang', 'shuguang', 'shuguang', 0.0400),
+    (3, 'Store-3', 'xinghe', 'xinghe', 'xinghe', 0.0300)`
   );
   await query(
-    `INSERT IGNORE INTO stores (name, subdomain, domain_prefix, commission_rate)
-     VALUES (:name, 'online', 'online', 0.0000)`,
+    `INSERT IGNORE INTO stores (name, store_key, subdomain, domain_prefix, commission_rate)
+     VALUES (:name, 'online', 'online', 'online', 0.0000)`,
     { name: DEFAULT_ONLINE_STORE_NAME }
   );
   await query(
@@ -830,9 +836,9 @@ async function seedBaseData() {
     }
   );
   await query(
-    `INSERT IGNORE INTO stores (name, subdomain, domain_prefix, commission_rate) VALUES
-     ('yishiguang', 'yishiguang', 'yishiguang', 0.0500),
-     ('buka', 'buka', 'buka', 0.0400)`
+    `INSERT IGNORE INTO stores (name, store_key, subdomain, domain_prefix, commission_rate) VALUES
+     ('yishiguang', 'yishiguang', 'yishiguang', 'yishiguang', 0.0500),
+     ('buka', 'buka', 'buka', 'buka', 0.0400)`
   );
 
   await query(

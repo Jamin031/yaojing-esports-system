@@ -16,15 +16,18 @@
       type="info"
       :closable="false"
       show-icon
-      title="网吧来源绑定仅保存“来源标识”"
-      description="数据库只保存 domain_prefix / subdomain 的标识值，例如 online、buka、yishiguang。完整 URL 仅用于页面预览，不会写入数据库。正式域名统一为 https://{domain_prefix}.yaojingclub.com。"
+      title="门店来源标识与 ntfy topic 已统一"
+      description="每个门店都维护独立 store_key，ntfy 固定按门店自动生成两条 topic：yaojing-{store_key}-admin-live 与 yaojing-{store_key}-owner-finished。完整 URL 仅用于页面预览，不会写入数据库。"
     />
 
     <div class="card-surface page-table">
       <el-table :data="stores" v-loading="loading" stripe>
         <el-table-column prop="name" label="网吧名称" min-width="170" />
+        <el-table-column prop="store_key" label="store_key" min-width="180" show-overflow-tooltip />
         <el-table-column prop="domain_prefix" label="domain_prefix(来源标识)" min-width="190" show-overflow-tooltip />
         <el-table-column prop="subdomain" label="subdomain(来源标识)" min-width="190" show-overflow-tooltip />
+        <el-table-column prop="admin_live_topic" label="admin-live topic" min-width="280" show-overflow-tooltip />
+        <el-table-column prop="owner_finished_topic" label="owner-finished topic" min-width="320" show-overflow-tooltip />
         <el-table-column label="本地测试地址预览" min-width="280" show-overflow-tooltip>
           <template #default="{ row }">{{ row.local_preview }}</template>
         </el-table-column>
@@ -64,6 +67,9 @@
         <el-form-item label="subdomain(来源标识)">
           <el-input v-model="dialog.form.subdomain" placeholder="仅输入来源标识；留空时默认与 domain_prefix 一致" />
         </el-form-item>
+        <el-form-item label="store_key(ntfy 用)">
+          <el-input v-model="dialog.form.store_key" placeholder="留空时默认与 domain_prefix 一致" />
+        </el-form-item>
         <el-form-item v-if="dirtyHintText">
           <el-alert
             type="warning"
@@ -72,6 +78,12 @@
             title="检测到历史脏数据，请确认后保存修复"
             :description="dirtyHintText"
           />
+        </el-form-item>
+        <el-form-item label="admin-live topic">
+          <el-input :model-value="previewAdminLiveTopic" readonly />
+        </el-form-item>
+        <el-form-item label="owner-finished topic">
+          <el-input :model-value="previewOwnerFinishedTopic" readonly />
         </el-form-item>
         <el-form-item label="本地测试地址预览">
           <el-input :model-value="previewLocalUrl" readonly />
@@ -119,13 +131,22 @@ const dialog = reactive({
     ratePercent: 5,
     domain_prefix: '',
     subdomain: '',
+    store_key: '',
     dirty_domain_prefix_raw: '',
     dirty_subdomain_raw: '',
+    dirty_store_key_raw: '',
   },
 });
 
 const previewLocalUrl = computed(() => resolveLocalPreviewUrl(dialog.form.domain_prefix));
 const previewProdUrl = computed(() => resolveProdPreviewUrl(dialog.form.domain_prefix));
+const previewStoreKey = computed(() => normalizeSourceIdentifier(dialog.form.store_key || dialog.form.domain_prefix));
+const previewAdminLiveTopic = computed(() =>
+  previewStoreKey.value ? `yaojing-${previewStoreKey.value}-admin-live` : ''
+);
+const previewOwnerFinishedTopic = computed(() =>
+  previewStoreKey.value ? `yaojing-${previewStoreKey.value}-owner-finished` : ''
+);
 const dirtyHintText = computed(() => {
   const hints = [];
   if (dialog.form.dirty_domain_prefix_raw) {
@@ -133,6 +154,9 @@ const dirtyHintText = computed(() => {
   }
   if (dialog.form.dirty_subdomain_raw) {
     hints.push(`subdomain 原始值：${dialog.form.dirty_subdomain_raw}`);
+  }
+  if (dialog.form.dirty_store_key_raw) {
+    hints.push(`store_key 原始值：${dialog.form.dirty_store_key_raw}`);
   }
   return hints.join('；');
 });
@@ -153,15 +177,19 @@ function normalizeStoreRow(row) {
 
   return {
     ...row,
+    store_key: binding.store_key || domainPrefix,
     source_identifier: binding.source_identifier || previewSource,
     domain_prefix: domainPrefix,
     subdomain,
+    admin_live_topic: binding.store_key ? `yaojing-${binding.store_key}-admin-live` : '',
+    owner_finished_topic: binding.store_key ? `yaojing-${binding.store_key}-owner-finished` : '',
     local_preview: resolveLocalPreviewUrl(previewSource),
     prod_preview: resolveProdPreviewUrl(previewSource),
     binding_dirty: Boolean(binding.binding_dirty),
     binding_dirty_raw: binding.binding_dirty_raw || '',
     binding_dirty_domain_prefix_raw: binding.binding_dirty_domain_prefix_raw || '',
     binding_dirty_subdomain_raw: binding.binding_dirty_subdomain_raw || '',
+    binding_dirty_store_key_raw: binding.binding_dirty_store_key_raw || '',
   };
 }
 
@@ -183,8 +211,10 @@ function openDialog(row) {
       ratePercent: 5,
       domain_prefix: '',
       subdomain: '',
+      store_key: '',
       dirty_domain_prefix_raw: '',
       dirty_subdomain_raw: '',
+      dirty_store_key_raw: '',
     };
   } else {
     const binding = resolveStoreBinding(row);
@@ -194,8 +224,10 @@ function openDialog(row) {
       ratePercent: Number(row.commission_rate || 0.3) * 100,
       domain_prefix: binding.domain_prefix || '',
       subdomain: binding.subdomain || '',
+      store_key: binding.store_key || binding.domain_prefix || '',
       dirty_domain_prefix_raw: binding.binding_dirty_domain_prefix_raw || '',
       dirty_subdomain_raw: binding.binding_dirty_subdomain_raw || '',
+      dirty_store_key_raw: binding.binding_dirty_store_key_raw || '',
     };
   }
   dialog.visible = true;
@@ -227,12 +259,21 @@ async function saveStore() {
     return;
   }
 
+  let storeKey = normalizeSourceIdentifier(dialog.form.store_key);
+  if (!storeKey) {
+    storeKey = domainPrefix;
+  }
+  if (!isValidSourceIdentifier(storeKey)) {
+    ElMessage.warning('store_key 只能包含小写字母、数字、-、_，例如 buka');
+    return;
+  }
+
   const payload = {
     name: storeName,
     commission_rate: Number(dialog.form.ratePercent) / 100,
     domain_prefix: domainPrefix,
     subdomain,
-    store_key: domainPrefix,
+    store_key: storeKey,
     source_identifier: domainPrefix,
   };
 
@@ -247,6 +288,7 @@ async function saveStore() {
   await fetchStores();
   emitAdminSync(dialog.form.id ? 'store-updated' : 'store-created', {
     store_name: storeName,
+    store_key: storeKey,
     domain_prefix: domainPrefix,
     subdomain,
   });
