@@ -47,6 +47,7 @@ import { featureRoutes } from '../router';
 import { usePermission } from '../composables/usePermission';
 import { offAdminSync, onAdminSync } from '../utils/adminSync';
 import { isManualLogoutInProgress } from '../utils/authFlow';
+import { connectSocket, getSocket } from '../utils/socket';
 
 const appStore = useAppStore();
 const authStore = useAuthStore();
@@ -57,6 +58,9 @@ const { hasPage } = usePermission();
 const compactViewport = ref(false);
 const profileSyncTimer = ref(null);
 const PROFILE_SYNC_INTERVAL = 2 * 60 * 1000;
+let permissionRealtimeSocket = null;
+let permissionUpdateHandler = null;
+let permissionTemplateHandler = null;
 const mobileViewport = computed(() => appStore.mobileViewport);
 const mobileSidebarOpen = computed(() => appStore.mobileSidebarOpen);
 const asideWidth = computed(() => {
@@ -123,6 +127,54 @@ async function refreshProfilePermissionState() {
   ensureRoutePermission();
 }
 
+function unbindPermissionRealtime() {
+  const socket = permissionRealtimeSocket || getSocket();
+  if (socket && permissionUpdateHandler) {
+    socket.off('permissions:updated', permissionUpdateHandler);
+  }
+  if (socket && permissionTemplateHandler) {
+    socket.off('permissions:template-updated', permissionTemplateHandler);
+  }
+  permissionRealtimeSocket = null;
+  permissionUpdateHandler = null;
+  permissionTemplateHandler = null;
+}
+
+function bindPermissionRealtime() {
+  if (!authStore.token) {
+    unbindPermissionRealtime();
+    return;
+  }
+
+  const socket = connectSocket(authStore.token);
+  if (!socket) return;
+
+  const prevSocket = permissionRealtimeSocket || getSocket();
+  if (prevSocket && permissionUpdateHandler) {
+    prevSocket.off('permissions:updated', permissionUpdateHandler);
+  }
+  if (prevSocket && permissionTemplateHandler) {
+    prevSocket.off('permissions:template-updated', permissionTemplateHandler);
+  }
+
+  permissionRealtimeSocket = socket;
+  permissionUpdateHandler = async (payload = {}) => {
+    const currentUserId = resolveUserId(authStore.userInfo);
+    const targetUserId = String(payload.user_id || '');
+    if (!currentUserId || !targetUserId || currentUserId !== targetUserId) return;
+    await refreshProfilePermissionState();
+  };
+  permissionTemplateHandler = async (payload = {}) => {
+    const currentRole = normalizeRole(authStore.role);
+    const targetRole = normalizeRole(payload.role);
+    if (!currentRole || !targetRole || currentRole !== targetRole) return;
+    await refreshProfilePermissionState();
+  };
+
+  socket.on('permissions:updated', permissionUpdateHandler);
+  socket.on('permissions:template-updated', permissionTemplateHandler);
+}
+
 function stopProfileSyncTimer() {
   if (!profileSyncTimer.value) return;
   clearInterval(profileSyncTimer.value);
@@ -176,6 +228,7 @@ onMounted(() => {
   if (authStore.token) {
     notificationStore.init(authStore.token, router, authStore.role, authStore.userInfo);
   }
+  bindPermissionRealtime();
   startProfileSyncTimer();
   onAdminSync(handleSyncEvent);
   window.addEventListener('resize', syncViewportState);
@@ -184,6 +237,7 @@ onMounted(() => {
 onUnmounted(() => {
   offAdminSync(handleSyncEvent);
   stopProfileSyncTimer();
+  unbindPermissionRealtime();
   window.removeEventListener('resize', syncViewportState);
 });
 
@@ -192,10 +246,12 @@ watch(
   ([token, role, userInfo]) => {
     if (token && role) {
       notificationStore.init(token, router, role, userInfo);
+      bindPermissionRealtime();
       startProfileSyncTimer();
     } else {
       notificationStore.clear();
       stopProfileSyncTimer();
+      unbindPermissionRealtime();
       appStore.closeMobileSidebar();
     }
   },

@@ -22,6 +22,7 @@ const logsRoutes = require('./routes/logs');
 const permissionsRoutes = require('./routes/permissions');
 const storeDataRoutes = require('./routes/store_data');
 const notificationsRoutes = require('./routes/notifications');
+const devicesRoutes = require('./routes/devices');
 
 async function start() {
   await initSchema();
@@ -86,6 +87,7 @@ async function start() {
   app.use('/api/store-data', storeDataRoutes);
   app.use('/api/permissions', permissionsRoutes);
   app.use('/api/notifications', notificationsRoutes);
+  app.use('/api/devices', devicesRoutes);
 
   app.get('/api/health', (req, res) => {
     res.json({ success: true, data: { status: 'ok' }, message: 'ok' });

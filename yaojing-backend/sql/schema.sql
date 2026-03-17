@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS orders (
   contact VARCHAR(120) NOT NULL,
   customer_contact VARCHAR(120) NULL,
   customer_nickname VARCHAR(80) NULL,
+  device_id VARCHAR(120) NULL,
+  source VARCHAR(120) NULL,
   order_info VARCHAR(255) NOT NULL,
   order_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
   status ENUM('pending_contact', 'processing', 'problem', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact',
@@ -87,6 +89,7 @@ CREATE TABLE IF NOT EXISTS orders (
   KEY idx_orders_store_status (store_id, status),
   KEY idx_orders_created_at (created_at),
   KEY idx_orders_status_created (status, created_at),
+  KEY idx_orders_device_created (device_id, created_at),
   KEY idx_orders_shop_id (shop_id),
   KEY idx_orders_play_shop_id (play_shop_id),
   KEY idx_orders_deleted_created (is_deleted, created_at),
@@ -132,6 +135,60 @@ CREATE TABLE IF NOT EXISTS order_limits (
   KEY idx_order_limits_ip_type_expires (ip, limit_type, expires_at),
   KEY idx_order_limits_device_type_created (device_id, limit_type, created_at),
   KEY idx_order_limits_device_type_expires (device_id, limit_type, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS device_blocks (
+  device_id VARCHAR(120) NOT NULL,
+  source VARCHAR(120) NULL,
+  source_store_key VARCHAR(80) NULL,
+  last_order_id BIGINT UNSIGNED NULL,
+  last_order_at DATETIME NULL,
+  last_abnormal_at DATETIME NULL,
+  last_abnormal_count INT NOT NULL DEFAULT 0,
+  last_abnormal_reason VARCHAR(255) NULL,
+  manual_block_started_at DATETIME NULL,
+  manual_block_expires_at DATETIME NULL,
+  manual_is_permanent TINYINT(1) NOT NULL DEFAULT 0,
+  manual_block_reason VARCHAR(255) NULL,
+  manual_block_remark VARCHAR(500) NULL,
+  auto_block_started_at DATETIME NULL,
+  auto_block_expires_at DATETIME NULL,
+  auto_block_reason VARCHAR(255) NULL,
+  last_operator_user_id BIGINT UNSIGNED NULL,
+  last_operator_username VARCHAR(64) NULL,
+  last_operator_name VARCHAR(80) NULL,
+  last_operation_type VARCHAR(50) NULL,
+  last_operation_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (device_id),
+  KEY idx_device_blocks_source (source),
+  KEY idx_device_blocks_last_order (last_order_at),
+  KEY idx_device_blocks_last_abnormal (last_abnormal_at),
+  KEY idx_device_blocks_manual_block (manual_is_permanent, manual_block_expires_at),
+  KEY idx_device_blocks_auto_block (auto_block_expires_at),
+  KEY idx_device_blocks_last_operation (last_operation_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS device_block_logs (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  device_id VARCHAR(120) NOT NULL,
+  action_type VARCHAR(50) NOT NULL,
+  action_scope VARCHAR(20) NOT NULL DEFAULT 'manual',
+  operator_user_id BIGINT UNSIGNED NULL,
+  operator_username VARCHAR(64) NULL,
+  operator_name VARCHAR(80) NULL,
+  duration_minutes INT NULL,
+  is_permanent TINYINT(1) NOT NULL DEFAULT 0,
+  reason VARCHAR(255) NULL,
+  remark VARCHAR(500) NULL,
+  source VARCHAR(120) NULL,
+  before_status_json JSON NULL,
+  after_status_json JSON NULL,
+  metadata_json JSON NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_device_block_logs_device_created (device_id, created_at),
+  KEY idx_device_block_logs_action_created (action_type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS recycle_orders (

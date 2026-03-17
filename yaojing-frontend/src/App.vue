@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="app-shell">
     <AppNavbar :total="totalPrice" :is-form-valid="isFormValid" @jump-to-form="scrollToOrder" />
 
@@ -9,18 +9,19 @@
             <div class="hero-brand">
               <p class="hero-eyebrow">YAOJING</p>
               <h1>
-                <span>鏇滅珵</span>
+                <span>曜竞</span>
                 <small>ESPORTS CLUB</small>
               </h1>
             </div>
 
             <p class="hero-manifesto">
-              鎴戜滑鐩镐俊锛岀湡姝ｇ殑绔炴妧涓嶅彧鏄緭璧紝鏇存槸鐑埍銆侀粯濂戜笌骞惰偐浣滄垬銆傛洔绔烇紝鑷村姏浜庨櫔浣犺鐪熸墦濂芥瘡涓€鍦哄灞€銆?            </p>
+              我们相信，真正的竞技不只是输赢，更是热爱、默契与并肩作战。曜竞，致力于陪你认真打好每一场对局。
+            </p>
 
             <div class="hero-transition">
               <p class="hero-system-tag">
                 <span class="tag-dot" aria-hidden="true"></span>
-                鐢电珵鐐瑰崟绯荤粺
+                电竞点单系统
               </p>
               <div class="hero-actions">
                 <a class="hero-link" href="#pricing-panel">实时价位表</a>
@@ -40,17 +41,17 @@
 
           <div class="quick-filters">
             <label class="field-block">
-              <span>娓告垙</span>
+              <span>游戏</span>
               <select v-model.number="selectedGameId" @change="resetGameSelections">
-                <option :value="null">璇烽€夋嫨娓告垙</option>
+                <option :value="null">请选择游戏</option>
                 <option v-for="game in games" :key="game.id" :value="game.id">{{ game.name }}</option>
               </select>
             </label>
 
             <label class="field-block">
-              <span>鏈嶅姟绫诲瀷</span>
+              <span>服务类型</span>
               <select v-model.number="selectedServiceId" :disabled="!selectedGameId" @change="selectedPackageId = null">
-                <option :value="null">璇烽€夋嫨鏈嶅姟</option>
+                <option :value="null">请选择服务</option>
                 <option v-for="srv in availableServices" :key="srv.id" :value="srv.id">{{ srv.name }}</option>
               </select>
             </label>
@@ -119,23 +120,23 @@
             </label>
 
             <label v-if="selectedPackage && isHourly" class="field-block duration-block">
-              <span>鏈嶅姟鏃堕暱锛歿{ orderDuration }} 灏忔椂</span>
+              <span>服务时长：{{ orderDuration }} 小时</span>
               <input v-model.number="orderDuration" type="range" min="1" max="12" step="1" />
             </label>
 
             <label class="checkbox-row">
               <input v-model="isAnonymous" type="checkbox" />
-              <span>鍖垮悕涓嬪崟</span>
+              <span>匿名下单</span>
             </label>
 
             <div class="summary-card" v-if="selectedPackage">
-              <p>濂楅锛歿{ selectedPackage.name }}</p>
+              <p>套餐：{{ selectedPackage.name }}</p>
               <p>
-                鍗曚环锛毬{ selectedPackage.price }}
-                <span v-if="isHourly">/灏忔椂</span>
+                单价：¥{{ selectedPackage.price }}
+                <span v-if="isHourly">/小时</span>
               </p>
-              <p class="total">鍚堣锛毬{ totalPrice }}</p>
-              <p class="summary-source">鏉ユ簮鏍囪瘑锛歿{ domainPrefix }}</p>
+              <p class="total">合计：¥{{ totalPrice }}</p>
+              <p class="summary-source">来源标识：{{ domainPrefix }}</p>
             </div>
 
             <button
@@ -144,15 +145,15 @@
               :disabled="!isFormValid || isSubmitting"
               type="submit"
             >
-              <span>{{ isSubmitting ? '鎻愪氦涓?..' : '鐢熸垚璁㈠崟' }}</span>
+              <span>{{ isSubmitting ? '提交中...' : '生成订单' }}</span>
             </button>
           </form>
         </article>
       </section>
 
       <footer class="page-footer">
-        <p class="footer-brand">鏇滅珵 <span>ESPORTS CLUB</span></p>
-        <p class="footer-slogan">涓虹珵鎶€鑰岀敓</p>
+        <p class="footer-brand">曜竞 <span>ESPORTS CLUB</span></p>
+        <p class="footer-slogan">为竞技而生</p>
       </footer>
     </main>
 
@@ -203,11 +204,11 @@ const domainPrefix = computed(() => {
 
 const games = ref([
   { id: 1, name: '三角洲行动' },
-  { id: 2, name: '鑻遍泟鑱旂洘' },
-  { id: 3, name: '鏃犵晱濂戠害' },
-  { id: 4, name: '姘稿姭鏃犻棿' },
+  { id: 2, name: '英雄联盟' },
+  { id: 3, name: '无畏契约' },
+  { id: 4, name: '永劫无间' },
   { id: 5, name: 'PUBG' },
-  { id: 6, name: '瀹堟湜鍏堥攱' }
+  { id: 6, name: '守望先锋' }
 ])
 
 const services = ref([
@@ -215,54 +216,54 @@ const services = ref([
   { id: 102, game_id: 1, name: '体验单' },
   { id: 103, game_id: 1, name: '陪玩单' },
   { id: 104, game_id: 1, name: '特色单' },
-  { id: 201, game_id: 2, name: '涓撲笟闄帺' },
-  { id: 301, game_id: 3, name: '涓撲笟闄帺' },
-  { id: 401, game_id: 4, name: '涓撲笟闄帺' },
-  { id: 501, game_id: 5, name: '涓撲笟闄帺' },
-  { id: 601, game_id: 6, name: '涓撲笟闄帺' }
+  { id: 201, game_id: 2, name: '专业陪玩' },
+  { id: 301, game_id: 3, name: '专业陪玩' },
+  { id: 401, game_id: 4, name: '专业陪玩' },
+  { id: 501, game_id: 5, name: '专业陪玩' },
+  { id: 601, game_id: 6, name: '专业陪玩' }
 ])
 
 const packages = ref([
-  { id: 1, service_id: 101, name: '178淇?00W', price: 178, is_hourly: false },
-  { id: 2, service_id: 101, name: '228淇?000W', price: 228, is_hourly: false },
-  { id: 3, service_id: 101, name: '298淇?388W', price: 298, is_hourly: false },
-  { id: 4, service_id: 101, name: '388淇?000W', price: 388, is_hourly: false },
-  { id: 5, service_id: 101, name: '558淇?000W', price: 558, is_hourly: false },
-  { id: 6, service_id: 101, name: '999淇?000W', price: 999, is_hourly: false },
+  { id: 1, service_id: 101, name: '178保700W', price: 178, is_hourly: false },
+  { id: 2, service_id: 101, name: '228保1000W', price: 228, is_hourly: false },
+  { id: 3, service_id: 101, name: '298保1388W', price: 298, is_hourly: false },
+  { id: 4, service_id: 101, name: '388保2000W', price: 388, is_hourly: false },
+  { id: 5, service_id: 101, name: '558保3000W', price: 558, is_hourly: false },
+  { id: 6, service_id: 101, name: '999保5000W', price: 999, is_hourly: false },
 
-  { id: 7, service_id: 102, name: '鏈哄瘑锛?8淇?88W', price: 88, is_hourly: false },
-  { id: 8, service_id: 102, name: '缁濆瘑锛?28淇?88W', price: 128, is_hourly: false },
+  { id: 7, service_id: 102, name: '机密：88保688W', price: 88, is_hourly: false },
+  { id: 8, service_id: 102, name: '绝密：128保888W', price: 128, is_hourly: false },
 
-  { id: 9, service_id: 103, name: '涓夎娲?鏅€氬ū涔愰櫔', price: 60, is_hourly: true },
-  { id: 10, service_id: 103, name: '涓夎娲?鏅€氭妧鏈櫔', price: 70, is_hourly: true },
-  { id: 11, service_id: 103, name: '涓夎娲?鏅€氶瓟鐜嬮櫔', price: 80, is_hourly: true },
+  { id: 9, service_id: 103, name: '三角洲行动-普通娱乐陪', price: 60, is_hourly: true },
+  { id: 10, service_id: 103, name: '三角洲行动-普通技术陪', price: 70, is_hourly: true },
+  { id: 11, service_id: 103, name: '三角洲行动-普通魔王陪', price: 80, is_hourly: true },
   { id: 12, service_id: 103, name: '三角洲行动-机密娱乐陪', price: 70, is_hourly: true },
-  { id: 13, service_id: 103, name: '涓夎娲?鏈哄瘑鎶€鏈櫔', price: 90, is_hourly: true },
+  { id: 13, service_id: 103, name: '三角洲行动-机密技术陪', price: 90, is_hourly: true },
   { id: 14, service_id: 103, name: '三角洲行动-机密魔王陪', price: 120, is_hourly: true },
   { id: 15, service_id: 103, name: '三角洲行动-绝密娱乐陪', price: 90, is_hourly: true },
-  { id: 16, service_id: 103, name: '涓夎娲?缁濆瘑鎶€鏈櫔', price: 120, is_hourly: true },
+  { id: 16, service_id: 103, name: '三角洲行动-绝密技术陪', price: 120, is_hourly: true },
   { id: 117, service_id: 103, name: '三角洲行动-绝密魔王陪', price: 160, is_hourly: true },
 
-  { id: 118, service_id: 104, name: '鍗槦閿咃細淇?100W', price: 298, is_hourly: false },
-  { id: 119, service_id: 104, name: '鐏鐕冩枡锛氫繚1800W', price: 650, is_hourly: false },
-  { id: 120, service_id: 104, name: '娴姏璁惧锛氫繚3500W', price: 760, is_hourly: false },
-  { id: 121, service_id: 104, name: '闈炴床涔嬪績锛氫繚9999W', price: 13688, is_hourly: false },
-  { id: 122, service_id: 104, name: '璧屽崟灞€3绾笖750W', price: 468, is_hourly: false },
-  { id: 123, service_id: 104, name: '鏉挎澘姹傜敓鍗曪細淇?080W', price: 328, is_hourly: false },
+  { id: 118, service_id: 104, name: '卫星锅：保1100W', price: 298, is_hourly: false },
+  { id: 119, service_id: 104, name: '火箭燃料：保1800W', price: 650, is_hourly: false },
+  { id: 120, service_id: 104, name: '浮力设备：保3500W', price: 760, is_hourly: false },
+  { id: 121, service_id: 104, name: '非洲之心：保9999W', price: 13688, is_hourly: false },
+  { id: 122, service_id: 104, name: '赌单局3红且750W', price: 468, is_hourly: false },
+  { id: 123, service_id: 104, name: '板板求生单：保1080W', price: 328, is_hourly: false },
   { id: 124, service_id: 104, name: '绝密航天清图单', price: 888, is_hourly: false },
-  { id: 125, service_id: 104, name: '6421鍑虹孩鍗曪細淇?500W', price: 588, is_hourly: false },
-  { id: 126, service_id: 104, name: '鎶€鑳借彍鍚嶅崟锛氫繚1200W', price: 438, is_hourly: false },
+  { id: 125, service_id: 104, name: '6421出红单：保2500W', price: 588, is_hourly: false },
+  { id: 126, service_id: 104, name: '技能菜名单：保1200W', price: 438, is_hourly: false },
 
-  { id: 17, service_id: 201, name: '鑻遍泟鑱旂洘-鎶€鏈櫔', price: 60, is_hourly: true },
+  { id: 17, service_id: 201, name: '英雄联盟-技术陪', price: 60, is_hourly: true },
   { id: 171, service_id: 201, name: '英雄联盟-娱乐陪', price: 50, is_hourly: true },
-  { id: 18, service_id: 301, name: '鏃犵晱濂戠害-鎶€鏈櫔', price: 70, is_hourly: true },
+  { id: 18, service_id: 301, name: '无畏契约-技术陪', price: 70, is_hourly: true },
   { id: 181, service_id: 301, name: '无畏契约-娱乐陪', price: 60, is_hourly: true },
-  { id: 19, service_id: 401, name: '姘稿姭鏃犻棿-鎶€鏈櫔', price: 60, is_hourly: true },
+  { id: 19, service_id: 401, name: '永劫无间-技术陪', price: 60, is_hourly: true },
   { id: 191, service_id: 401, name: '永劫无间-娱乐陪', price: 50, is_hourly: true },
   { id: 20, service_id: 501, name: 'PUBG-娱乐陪', price: 50, is_hourly: true },
-  { id: 202, service_id: 501, name: 'PUBG-鎶€鏈櫔', price: 60, is_hourly: true },
+  { id: 202, service_id: 501, name: 'PUBG-技术陪', price: 60, is_hourly: true },
   { id: 21, service_id: 601, name: '守望先锋-娱乐陪', price: 50, is_hourly: true },
-  { id: 212, service_id: 601, name: '瀹堟湜鍏堥攱-鎶€鏈櫔', price: 60, is_hourly: true }
+  { id: 212, service_id: 601, name: '守望先锋-技术陪', price: 60, is_hourly: true }
 ])
 
 const availableServices = computed(() =>
@@ -305,9 +306,9 @@ const contactHintText = computed(() => {
   return contactType.value === 'phone' ? CONTACT_TYPE_MESSAGES.phone_empty : CONTACT_TYPE_MESSAGES.wechat_empty
 })
 const contactInputPlaceholder = computed(() => {
-  if (contactType.value === 'wechat') return '璇疯緭鍏ュ井淇″彿'
-  if (contactType.value === 'phone') return '璇疯緭鍏ユ墜鏈哄彿'
-  return '璇峰厛閫夋嫨鑱旂郴鏂瑰紡绫诲瀷'
+  if (contactType.value === 'wechat') return CONTACT_TYPE_MESSAGES.wechat_empty
+  if (contactType.value === 'phone') return CONTACT_TYPE_MESSAGES.phone_empty
+  return '请先选择联系方式类型'
 })
 const contactInputMaxLength = computed(() => (contactType.value === 'phone' ? 11 : 20))
 const contactInputClass = computed(() => ({
@@ -420,7 +421,7 @@ const submitOrder = async () => {
   const cooldownRemainingMs = getCooldownRemainingMs()
   if (cooldownRemainingMs > 0) {
     const cooldownSeconds = Math.ceil(cooldownRemainingMs / 1000)
-    showMessage('warning', `璇?{cooldownSeconds}绉掑悗鍐嶈瘯`)
+    showMessage('warning', `请${cooldownSeconds}秒后再试`)
     return
   }
 
@@ -441,7 +442,7 @@ const submitOrder = async () => {
       package_name: selectedPackage.value.name,
       order_duration: isHourly.value ? orderDuration.value : 1,
       order_amount: totalPrice.value,
-      customer_name: isAnonymous.value ? '鍖垮悕鐢ㄦ埛' : nameValue.value,
+      customer_name: isAnonymous.value ? '匿名用户' : nameValue.value,
       customer_contact: contactValue.value,
       // Canonical customer remark fields consumed by current backend/admin.
       customer_order_remark: customerOrderRemark.value || '',
@@ -462,7 +463,7 @@ const submitOrder = async () => {
     const isSuccess = isOrderSuccessResponse(res, responseData)
 
     if (isSuccess) {
-      showMessage('success', '瀹㈡湇灏嗗敖蹇仈绯讳綘')
+      showMessage('success', '客服将尽快联系你')
       showContactModal.value = true
       return
     }
@@ -473,13 +474,13 @@ const submitOrder = async () => {
     rollbackOrderCooldown(previousCooldownValue)
     const backendMessage = getBackendMessage(error?.response?.data)
 
-    console.error('涓嬪崟澶辫触鐪熷疄閿欒:', {
+    console.error('下单失败真实错误:', {
       message: error?.message,
       status: error?.response?.status,
       data: error?.response?.data
     })
 
-    showMessage('error', backendMessage || error?.message || '鎻愪氦澶辫触')
+    showMessage('error', backendMessage || error?.message || '提交失败')
   } finally {
     isSubmitting.value = false
   }
@@ -1141,4 +1142,3 @@ select:disabled {
   }
 }
 </style>
-

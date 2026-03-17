@@ -45,6 +45,11 @@ const ACTION_TEXT_MAP = Object.freeze({
   'permissions.adjust': '调整权限',
   'permissions.template.update': '设置默认权限模板',
 
+  'devices.block': '设备拉黑',
+  'devices.permanent_block': '永久拉黑设备',
+  'devices.unblock': '解除设备封禁',
+  'devices.revoke_permanent_block': '撤回永久拉黑',
+
   'notifications.read': '标记提醒已读',
 });
 
@@ -57,6 +62,7 @@ const TARGET_TEXT_MAP = Object.freeze({
   play_shop: '陪玩店',
   role_template: '身份模板',
   permission: '权限',
+  device: '设备',
   notification: '消息提醒',
 });
 

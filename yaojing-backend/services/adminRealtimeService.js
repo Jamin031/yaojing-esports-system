@@ -67,8 +67,46 @@ function emitNewOrderCreated(io, payload = {}) {
   return { emitted: true };
 }
 
+function emitUserPermissionUpdated(io, payload = {}) {
+  if (!io || typeof io.to !== 'function') {
+    return { emitted: false, reason: 'io_missing' };
+  }
+
+  const userId = Number(payload.user_id || payload.userId || 0);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return { emitted: false, reason: 'user_missing' };
+  }
+
+  io.to(`user:${userId}`).emit('permissions:updated', {
+    user_id: userId,
+    updated_at: new Date().toISOString(),
+  });
+
+  return { emitted: true };
+}
+
+function emitRolePermissionTemplateUpdated(io, payload = {}) {
+  if (!io || typeof io.to !== 'function') {
+    return { emitted: false, reason: 'io_missing' };
+  }
+
+  const role = normalizeRole(payload.role);
+  if (!role) {
+    return { emitted: false, reason: 'role_missing' };
+  }
+
+  io.to(`role:${role}`).emit('permissions:template-updated', {
+    role,
+    updated_at: new Date().toISOString(),
+  });
+
+  return { emitted: true };
+}
+
 module.exports = {
   ADMIN_LIVE_SOCKET_ROLES,
+  emitRolePermissionTemplateUpdated,
   joinSocketRooms,
   emitNewOrderCreated,
+  emitUserPermissionUpdated,
 };

@@ -33,6 +33,7 @@ const {
   recordBlockedAttempt,
   recordMissingDeviceId,
 } = require('../services/antiFraudService');
+const { recordDeviceOrderActivity } = require('../services/deviceRiskService');
 
 const DEFAULT_PLATFORM_RATE = Number(process.env.DEFAULT_PLATFORM_RATE || 0.05);
 const ORDER_STATUSES = ['pending_contact', 'processing', 'problem', 'completed', 'cancelled'];
@@ -1297,6 +1298,8 @@ async function createOrder(req, res) {
         contact,
         customer_contact,
         customer_nickname,
+        device_id,
+        source,
         order_info,
         order_amount,
         status,
@@ -1322,13 +1325,15 @@ async function createOrder(req, res) {
         created_by
       )
       VALUES
-      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         makeOrderNo(isOnlineSource ? 'ONL' : 'WB'),
         Number(store.id),
         payload.contact,
         payload.contact,
         payload.customer_nickname,
+        requestDevice.deviceId,
+        requestStoreLocator.storeKey || store.store_key || sourceDomain || null,
         payload.order_info,
         payload.order_amount,
         status,
@@ -1376,6 +1381,17 @@ async function createOrder(req, res) {
       source_amount: settlementAmount(payload.order_amount, payload.revised_amount),
       source_order_time: new Date(),
     });
+
+    await recordDeviceOrderActivity(
+      requestDevice.deviceId,
+      {
+        order_id: insertedId,
+        last_order_at: new Date(),
+        source: requestStoreLocator.storeKey || store.store_key || sourceDomain || null,
+        source_store_key: store.store_key || requestStoreLocator.storeKey || null,
+      },
+      { conn }
+    );
   });
 
   const row = await fetchOrderById(insertedId);
@@ -2349,5 +2365,3 @@ module.exports = {
   deleteOrder,
   updateOrderEffective,
 };
-
-

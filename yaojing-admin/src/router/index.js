@@ -15,6 +15,7 @@ const OnlineUserOrdersView = () => import('../views/online-user-orders/OnlineUse
 const StoreDataView = () => import('../views/store-data/StoreDataView.vue');
 const StoresView = () => import('../views/stores/StoresView.vue');
 const PlayStoresView = () => import('../views/play-stores/PlayStoresView.vue');
+const DevicesView = () => import('../views/devices/DevicesView.vue');
 const UsersView = () => import('../views/users/UsersView.vue');
 const PermissionsView = () => import('../views/permissions/PermissionsView.vue');
 const OperationLogsView = () => import('../views/operation-logs/OperationLogsView.vue');
@@ -123,6 +124,20 @@ export const featureRoutes = [
       menu: true,
       menuKey: 'menu:play_stores',
       permissionKey: 'play_stores:view',
+    },
+  },
+  {
+    path: '/devices',
+    name: 'devices',
+    component: DevicesView,
+    meta: {
+      title: '设备管理',
+      icon: 'Iphone',
+      roles: ['super_admin', 'admin', 'customer_service', 'finance', 'store_owner'],
+      menu: true,
+      menuKey: 'page.device_management.view',
+      menuPermissionType: 'pages',
+      permissionKey: 'page.device_management.view',
     },
   },
   {

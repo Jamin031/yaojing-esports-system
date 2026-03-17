@@ -1,6 +1,11 @@
 const { query, transaction } = require('../config/db');
 const contactRisk = require('../../shared/contactRisk');
 const deviceIdRules = require('../../shared/deviceId');
+const {
+  applyAutomaticDeviceBlock,
+  getDeviceStatus,
+  recordDeviceAbnormalActivity,
+} = require('./deviceRiskService');
 
 const {
   BLOCKED_DEVICE_MESSAGE,
@@ -150,6 +155,44 @@ function normalizeLimitRow(row, deviceId) {
   };
 }
 
+function normalizeDeviceStatusRow(status, deviceId) {
+  const normalizedDeviceId = normalizeDeviceId(status?.device_id || deviceId);
+  if (!status || !status.is_blocked) {
+    return {
+      blocked: false,
+      device_id: normalizedDeviceId,
+      expires_at: status?.blocked_until || null,
+      retry_after_seconds: 0,
+      block_type: status?.block_type || 'none',
+      is_permanent: Boolean(status?.is_permanent),
+      reason: status?.reason || null,
+      remark: status?.remark || null,
+      source: status?.source || null,
+      store_key: status?.source_store_key || null,
+      blocked_at: status?.blocked_at || null,
+      last_block_started_at: status?.blocked_at || null,
+    };
+  }
+
+  return {
+    blocked: true,
+    device_id: normalizedDeviceId,
+    expires_at: status.blocked_until || null,
+    retry_after_seconds: status.is_permanent ? 0 : Math.max(0, Number(status.remaining_seconds || 0)),
+    block_type: status.block_type || 'none',
+    is_permanent: Boolean(status.is_permanent),
+    reason: status.reason || null,
+    remark: status.remark || null,
+    source: status.source || null,
+    store_key: status.source_store_key || null,
+    blocked_at: status.blocked_at || null,
+    last_block_started_at: status.blocked_at || null,
+    last_operator_user_id: status.last_operator_user_id || null,
+    last_operator_username: status.last_operator_username || null,
+    last_operator_name: status.last_operator_name || null,
+  };
+}
+
 async function getLatestDeviceBlock(deviceId, options = {}) {
   const normalized = normalizeDeviceId(deviceId);
   if (!isValidDeviceId(normalized)) {
@@ -184,7 +227,7 @@ async function getLatestDeviceBlock(deviceId, options = {}) {
   return rows[0] || null;
 }
 
-async function getBlockedDeviceInfo(deviceId, options = {}) {
+async function getRawBlockedDeviceInfo(deviceId, options = {}) {
   const normalized = normalizeDeviceId(deviceId);
   if (!isValidDeviceId(normalized)) {
     return {
@@ -225,6 +268,25 @@ async function getBlockedDeviceInfo(deviceId, options = {}) {
   return normalizeLimitRow(rows[0], normalized);
 }
 
+async function getBlockedDeviceInfo(deviceId, options = {}) {
+  const normalized = normalizeDeviceId(deviceId);
+  if (!isValidDeviceId(normalized)) {
+    return {
+      blocked: false,
+      device_id: normalized,
+      expires_at: null,
+      retry_after_seconds: 0,
+    };
+  }
+
+  const deviceStatus = await getDeviceStatus(normalized, options);
+  if (deviceStatus.exists) {
+    return normalizeDeviceStatusRow(deviceStatus, normalized);
+  }
+
+  return getRawBlockedDeviceInfo(normalized, options);
+}
+
 async function isBlockedDevice(deviceId, options = {}) {
   const blockInfo = await getBlockedDeviceInfo(deviceId, options);
   return blockInfo.blocked;
@@ -235,6 +297,11 @@ async function clearOrExpireDeviceBlock(deviceId) {
   const activeBlock = await getBlockedDeviceInfo(normalized);
   if (activeBlock.blocked) {
     return activeBlock;
+  }
+
+  const deviceStatus = await getDeviceStatus(normalized);
+  if (deviceStatus.exists) {
+    return normalizeDeviceStatusRow(deviceStatus, normalized);
   }
 
   const latestBlock = await getLatestDeviceBlock(normalized);
@@ -340,6 +407,18 @@ async function recordInvalidAttempt(deviceId, context = {}, options = {}) {
     options
   );
 
+  await recordDeviceAbnormalActivity(
+    normalized,
+    {
+      source: context.source || context.source_domain || context.store_key || null,
+      source_store_key: context.store_key || null,
+      last_abnormal_at: new Date(),
+      last_abnormal_count: context.metadata?.attempt_count || context.attempt_count || 0,
+      last_abnormal_reason: context.contact_assessment?.reasonSummary || context.reason || 'invalid contact attempt',
+    },
+    options
+  );
+
   return {
     device_id: normalized,
   };
@@ -368,6 +447,27 @@ async function blockDeviceFor5Minutes(deviceId, context = {}, options = {}) {
       ...context,
       device_id: normalized,
       expires_at: blockedUntil,
+    },
+    options
+  );
+
+  await applyAutomaticDeviceBlock(
+    normalized,
+    {
+      source: context.source || context.source_domain || context.store_key || null,
+      source_store_key: context.store_key || null,
+      last_abnormal_at: new Date(),
+      last_abnormal_count:
+        context.metadata?.trigger_attempt_count ||
+        context.metadata?.attempt_count ||
+        context.attempt_count ||
+        FRAUD_DEVICE_INVALID_ATTEMPT_LIMIT,
+      last_abnormal_reason: context.contact_assessment?.reasonSummary || context.reason || 'device blocked',
+      block_started_at: new Date(),
+      blocked_until: blockedUntil,
+      duration_minutes: durationMinutes,
+      reason: context.contact_assessment?.reasonSummary || context.reason || 'device blocked',
+      trigger: context.metadata?.rule || 'invalid_contact',
     },
     options
   );

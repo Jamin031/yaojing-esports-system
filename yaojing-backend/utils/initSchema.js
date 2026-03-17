@@ -11,8 +11,9 @@ const DEFAULT_PLATFORM_RATE = Number(process.env.DEFAULT_PLATFORM_RATE || 0.05);
 const DEFAULT_ONLINE_STORE_NAME = process.env.DEFAULT_ONLINE_STORE_NAME || 'Online Store';
 const ROLE_TEMPLATE_PERMISSION_BACKFILL = Object.freeze({
   admin: {
+    pages: ['page.device_management.view'],
     fields: ['orders:customer_nickname', 'orders:order_remark'],
-    buttons: ['orders:edit_remark'],
+    buttons: ['orders:edit_remark', 'api.device_management.block', 'api.device_management.unblock'],
     scopes: Object.values(VIEW_SCOPE_KEYS),
   },
   store_owner: {
@@ -29,8 +30,9 @@ const ROLE_TEMPLATE_PERMISSION_BACKFILL = Object.freeze({
     ],
   },
   customer_service: {
+    pages: ['page.device_management.view'],
     fields: ['orders:customer_nickname', 'orders:order_remark'],
-    buttons: ['orders:edit_remark'],
+    buttons: ['orders:edit_remark', 'api.device_management.block', 'api.device_management.unblock'],
     scopes: [
       VIEW_SCOPE_KEYS.ORDER_DETAIL_SENSITIVE_FIELDS,
       VIEW_SCOPE_KEYS.ORDER_ALERTS_RECEIVE,
@@ -218,6 +220,8 @@ async function ensureOrdersTable() {
       contact VARCHAR(120) NOT NULL,
       customer_contact VARCHAR(120) NULL,
       customer_nickname VARCHAR(80) NULL,
+      device_id VARCHAR(120) NULL,
+      source VARCHAR(120) NULL,
       order_info VARCHAR(255) NOT NULL,
       order_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
       status ENUM('pending_contact', 'processing', 'problem', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact',
@@ -250,6 +254,7 @@ async function ensureOrdersTable() {
       KEY idx_orders_store_status (store_id, status),
       KEY idx_orders_created_at (created_at),
       KEY idx_orders_status_created (status, created_at),
+      KEY idx_orders_device_created (device_id, created_at),
       KEY idx_orders_shop_id (shop_id),
       KEY idx_orders_play_shop_id (play_shop_id),
       KEY idx_orders_deleted_created (is_deleted, created_at)
@@ -261,6 +266,8 @@ async function ensureOrdersTable() {
   await safeQuery(`ALTER TABLE orders ADD COLUMN play_shop_commission DECIMAL(12,2) NOT NULL DEFAULT 0`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN customer_contact VARCHAR(120) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN customer_nickname VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN device_id VARCHAR(120) NULL`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN source VARCHAR(120) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN revised_amount DECIMAL(12,2) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN order_remark VARCHAR(500) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN problem_remark VARCHAR(500) NULL`);
@@ -369,6 +376,100 @@ async function ensureOrderLimitsTable() {
   await safeQuery(`ALTER TABLE order_limits ADD KEY idx_order_limits_ip_type_expires (ip, limit_type, expires_at)`);
   await safeQuery(`ALTER TABLE order_limits ADD KEY idx_order_limits_device_type_created (device_id, limit_type, created_at)`);
   await safeQuery(`ALTER TABLE order_limits ADD KEY idx_order_limits_device_type_expires (device_id, limit_type, expires_at)`);
+}
+
+async function ensureDeviceBlockTables() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS device_blocks (
+      device_id VARCHAR(120) NOT NULL,
+      source VARCHAR(120) NULL,
+      source_store_key VARCHAR(80) NULL,
+      last_order_id BIGINT UNSIGNED NULL,
+      last_order_at DATETIME NULL,
+      last_abnormal_at DATETIME NULL,
+      last_abnormal_count INT NOT NULL DEFAULT 0,
+      last_abnormal_reason VARCHAR(255) NULL,
+      manual_block_started_at DATETIME NULL,
+      manual_block_expires_at DATETIME NULL,
+      manual_is_permanent TINYINT(1) NOT NULL DEFAULT 0,
+      manual_block_reason VARCHAR(255) NULL,
+      manual_block_remark VARCHAR(500) NULL,
+      auto_block_started_at DATETIME NULL,
+      auto_block_expires_at DATETIME NULL,
+      auto_block_reason VARCHAR(255) NULL,
+      last_operator_user_id BIGINT UNSIGNED NULL,
+      last_operator_username VARCHAR(64) NULL,
+      last_operator_name VARCHAR(80) NULL,
+      last_operation_type VARCHAR(50) NULL,
+      last_operation_at DATETIME NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (device_id),
+      KEY idx_device_blocks_source (source),
+      KEY idx_device_blocks_last_order (last_order_at),
+      KEY idx_device_blocks_last_abnormal (last_abnormal_at),
+      KEY idx_device_blocks_manual_block (manual_is_permanent, manual_block_expires_at),
+      KEY idx_device_blocks_auto_block (auto_block_expires_at),
+      KEY idx_device_blocks_last_operation (last_operation_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN source VARCHAR(120) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN source_store_key VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_order_id BIGINT UNSIGNED NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_order_at DATETIME NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_abnormal_at DATETIME NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_abnormal_count INT NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_abnormal_reason VARCHAR(255) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN manual_block_started_at DATETIME NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN manual_block_expires_at DATETIME NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN manual_is_permanent TINYINT(1) NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN manual_block_reason VARCHAR(255) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN manual_block_remark VARCHAR(500) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN auto_block_started_at DATETIME NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN auto_block_expires_at DATETIME NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN auto_block_reason VARCHAR(255) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operator_user_id BIGINT UNSIGNED NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operator_username VARCHAR(64) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operator_name VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operation_type VARCHAR(50) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operation_at DATETIME NULL`);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS device_block_logs (
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      device_id VARCHAR(120) NOT NULL,
+      action_type VARCHAR(50) NOT NULL,
+      action_scope VARCHAR(20) NOT NULL DEFAULT 'manual',
+      operator_user_id BIGINT UNSIGNED NULL,
+      operator_username VARCHAR(64) NULL,
+      operator_name VARCHAR(80) NULL,
+      duration_minutes INT NULL,
+      is_permanent TINYINT(1) NOT NULL DEFAULT 0,
+      reason VARCHAR(255) NULL,
+      remark VARCHAR(500) NULL,
+      source VARCHAR(120) NULL,
+      before_status_json JSON NULL,
+      after_status_json JSON NULL,
+      metadata_json JSON NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_device_block_logs_device_created (device_id, created_at),
+      KEY idx_device_block_logs_action_created (action_type, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN action_scope VARCHAR(20) NOT NULL DEFAULT 'manual'`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN operator_user_id BIGINT UNSIGNED NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN operator_username VARCHAR(64) NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN operator_name VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN duration_minutes INT NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN is_permanent TINYINT(1) NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN reason VARCHAR(255) NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN remark VARCHAR(500) NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN source VARCHAR(120) NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN before_status_json JSON NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN after_status_json JSON NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN metadata_json JSON NULL`);
 }
 
 async function ensureOperationLogsTable() {
@@ -642,6 +743,9 @@ async function seedRBACData() {
     ('api.logs.read', 'Read logs', 'api', 'logs', 'read'),
     ('api.notifications.read', 'Read notifications', 'api', 'notifications', 'read'),
     ('api.notifications.read_all', 'Mark notifications read', 'api', 'notifications', 'read_all'),
+    ('page.device_management.view', 'View device management page', 'page', 'device_management', 'view'),
+    ('api.device_management.block', 'Block device', 'api', 'device_management', 'block'),
+    ('api.device_management.unblock', 'Unblock device', 'api', 'device_management', 'unblock'),
     ('api.users.manage', 'Manage users', 'api', 'users', 'manage'),
     ('api.stores.manage', 'Manage stores', 'api', 'stores', 'manage'),
     ('api.play_shops.manage', 'Manage play shops', 'api', 'play_shops', 'manage'),
@@ -669,6 +773,9 @@ async function seedRBACData() {
       'api.stats.online_vs_offline',
       'api.notifications.read',
       'api.notifications.read_all',
+      'page.device_management.view',
+      'api.device_management.block',
+      'api.device_management.unblock',
       'api.online_orders.read',
       'api.logs.read',
     ],
@@ -678,6 +785,9 @@ async function seedRBACData() {
       'api.orders.create',
       'api.notifications.read',
       'api.notifications.read_all',
+      'page.device_management.view',
+      'api.device_management.block',
+      'api.device_management.unblock',
       'api.online_orders.create',
     ],
     finance: [
@@ -931,6 +1041,7 @@ async function initSchema() {
   await ensureRolePermissionTemplatesTable();
   await ensureProblemOrdersTable();
   await ensureOrderLimitsTable();
+  await ensureDeviceBlockTables();
   await ensureOperationLogsTable();
   await ensureRecycleOrdersTable();
   await ensureOrdersHourStatsTable();

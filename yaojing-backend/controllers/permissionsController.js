@@ -3,6 +3,10 @@ const { ok, fail } = require('../utils/http');
 const { writeOperationLog } = require('../utils/operationLog');
 const { validateSuperAdminSelfPermissionUpdate } = require('../utils/superAdminGuard');
 const {
+  emitRolePermissionTemplateUpdated,
+  emitUserPermissionUpdated,
+} = require('../services/adminRealtimeService');
+const {
   PERMISSION_SCHEMAS,
   ROLE_DEFAULTS,
   getBuiltInRoleDefaultUiPermissions,
@@ -293,6 +297,8 @@ async function updateRoleTemplate(req, res) {
     after: { role, permissions: nextTemplate, diff },
   });
 
+  emitRolePermissionTemplateUpdated(req.app?.get('io'), { role });
+
   const row = await getRoleTemplateRow(role);
   return ok(
     res,
@@ -447,6 +453,8 @@ async function updateUserPermissions(req, res) {
       diff,
     },
   });
+
+  emitUserPermissionUpdated(req.app?.get('io'), { user_id: userId });
 
   return ok(
     res,

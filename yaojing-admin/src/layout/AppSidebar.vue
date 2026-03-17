@@ -42,7 +42,12 @@ const menus = computed(() => {
   return featureRoutes.filter((item) => {
     const roleOK = item.meta?.menu && item.meta?.roles?.includes(role);
     if (!roleOK) return false;
-    const menuOK = hasMenu(item.meta?.menuKey || item.meta?.permissionKey);
+    const menuPermissionKey = item.meta?.menuKey || item.meta?.permissionKey;
+    const menuPermissionType = item.meta?.menuPermissionType || 'menus';
+    const menuOK =
+      menuPermissionType === 'pages'
+        ? hasPage(menuPermissionKey)
+        : hasMenu(menuPermissionKey);
     const pageOK = hasPage(item.meta?.permissionKey);
     return menuOK && pageOK;
   });
