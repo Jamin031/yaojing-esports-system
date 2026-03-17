@@ -1,4 +1,4 @@
-const { query, transaction } = require('../config/db');
+﻿const { query, transaction } = require('../config/db');
 const {
   hasAnyRole,
   hasRole,
@@ -49,6 +49,7 @@ const {
   applyOrderRiskSnapshot,
   evaluateOrderRisk,
   mergeRiskSnapshot,
+  resolveRiskLevel,
   recordDeviceRiskEvent,
   recordRiskSnapshotEvents,
   upsertDeviceRiskSnapshot,
@@ -63,6 +64,7 @@ const ANONYMOUS_IDENTITY_VISIBLE_ROLES = Object.freeze(['super_admin', 'admin', 
 const ANONYMOUS_IDENTITY_VISIBLE_ROLE_SET = new Set(ANONYMOUS_IDENTITY_VISIBLE_ROLES);
 const DEVICE_BLOCK_PERMISSION = 'api.device_management.block';
 const GARBAGE_DEVICE_BLOCK_MINUTES = new Set([3, 5, 10, 30, 60, 1440]);
+const GARBAGE_RESTORE_TARGET_STATUSES = new Set(['pending_contact', 'processing']);
 const LEGACY_STATUS_MAP = {
   pending: 'pending_contact',
   confirmed: 'completed',
@@ -480,7 +482,7 @@ function resolveGarbageDeviceBlockOptions(body = {}) {
   const durationMinutes = Number(rawDuration);
   if (!GARBAGE_DEVICE_BLOCK_MINUTES.has(durationMinutes)) {
     return {
-      error: '设备拉黑时长仅支持 3 分钟、5 分钟、10 分钟、30 分钟、1 小时、24 小时或永久拉黑',
+      error: 'Device block duration only supports 3, 5, 10, 30, 60, 1440 minutes or permanent',
     };
   }
 
@@ -956,7 +958,45 @@ function buildCompletedNotificationType(previousStatus) {
 }
 
 function buildCompletedNotificationTitle(previousStatus) {
-  return String(previousStatus) === 'problem' ? '问题订单已完成' : '订单已完成';
+  return String(previousStatus) === 'problem' ? 'Problem order completed' : 'Order completed';
+}
+
+function isGarbageOrderRecord(order) {
+  return String(order?.status || '') === 'garbage' || Number(order?.is_junk_order || 0) === 1;
+}
+
+function buildRestoredGarbageRiskSnapshot(currentRiskSnapshot = {}) {
+  const currentFlags = parseJsonArray(currentRiskSnapshot.risk_flags);
+  const hadGarbageFlag = currentFlags.includes('garbage_order');
+  const nextFlags = currentFlags.filter((item) => item !== 'garbage_order');
+  const currentScore = Math.max(0, Number(currentRiskSnapshot.risk_score || 0));
+  const nextScore = hadGarbageFlag ? Math.max(0, currentScore - RISK_RULES.garbage_order) : currentScore;
+  const nextLevel = normalizeRiskLevel(resolveRiskLevel(nextScore));
+  const nextReviewStatus = ['high', 'critical'].includes(nextLevel) ? 'manual_review' : 'normal';
+
+  return {
+    ...currentRiskSnapshot,
+    risk_score: nextScore,
+    risk_level: nextLevel,
+    risk_flags: nextFlags,
+    is_junk_order: 0,
+    junk_reason: null,
+    review_status: nextReviewStatus,
+  };
+}
+
+function getGarbageOrderActionContext(req, before, targetStatus) {
+  const requested = String(req.garbageOrderAction || '').trim().toLowerCase();
+  if (requested) {
+    return requested;
+  }
+  if (targetStatus === 'garbage') {
+    return isGarbageOrderRecord(before) ? 'update_reason' : 'mark';
+  }
+  if (isGarbageOrderRecord(before) && targetStatus !== 'garbage') {
+    return 'restore';
+  }
+  return 'generic';
 }
 
 function canViewGarbageOrders(user) {
@@ -967,7 +1007,7 @@ function canViewGarbageOrders(user) {
 }
 
 function canReadOrder(user, order) {
-  if (String(order?.status || '') === 'garbage' || Number(order?.is_junk_order || 0) === 1) {
+  if (isGarbageOrderRecord(order)) {
     return canViewGarbageOrders(user);
   }
   if (canReadAllOrders(user)) {
@@ -1323,33 +1363,126 @@ async function listOrders(req, res) {
 async function getOrderById(req, res) {
   const user = req.user;
   if (!hasPagePermission(user, 'orders:view')) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const order = await fetchOrderById(id);
   if (!order) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
 
   if (!canReadOrder(user, order)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
   if (String(order.status) === 'problem' && !hasPagePermission(user, 'problem_orders:view')) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
-  return ok(res, applyOrderFieldPermissions(user, order), '订单详情获取成功');
+  return ok(res, applyOrderFieldPermissions(user, order), '璁㈠崟璇︽儏鑾峰彇鎴愬姛');
+}
+
+async function listGarbageOrders(req, res) {
+  if (!canViewGarbageOrders(req.user)) {
+    return fail(res, 'No permission', 403);
+  }
+
+  req.query = {
+    ...(req.query || {}),
+    status: 'garbage',
+    include_garbage: 1,
+  };
+
+  return listOrders(req, res);
+}
+
+async function getGarbageOrderDetail(req, res) {
+  if (!canViewGarbageOrders(req.user)) {
+    return fail(res, 'No permission', 403);
+  }
+
+  const id = Number(req.params.id);
+  const order = await fetchOrderById(id);
+  if (!order || Number(order.is_deleted) === 1 || !isGarbageOrderRecord(order)) {
+    return fail(res, 'Garbage order not found', 404);
+  }
+  if (!canReadOrder(req.user, order)) {
+    return fail(res, 'No permission', 403);
+  }
+
+  return ok(res, applyOrderFieldPermissions(req.user, order), 'Garbage order fetched successfully');
+}
+
+async function markOrderAsGarbage(req, res) {
+  req.body = {
+    ...(req.body || {}),
+    status: 'garbage',
+  };
+  req.garbageOrderAction = 'mark';
+  return updateOrderStatus(req, res);
+}
+
+async function updateGarbageOrderReason(req, res) {
+  if (!canManageOrderFlow(req.user)) {
+    return fail(res, 'No permission', 403);
+  }
+
+  const id = Number(req.params.id);
+  const target = await fetchOrderById(id);
+  if (!target || Number(target.is_deleted) === 1) {
+    return fail(res, 'Order not found', 404);
+  }
+  if (!isGarbageOrderRecord(target)) {
+    return fail(res, 'Only garbage orders can update garbage reason', 400);
+  }
+
+  const nextReason = pickGarbageOrderReason(req.body || {}) || target.junk_reason || '垃圾订单';
+  req.body = {
+    ...(req.body || {}),
+    status: 'garbage',
+    reason: nextReason,
+    block_device: false,
+  };
+  req.garbageOrderAction = 'update_reason';
+  return updateOrderStatus(req, res);
+}
+
+async function restoreGarbageOrderToNormal(req, res) {
+  if (!canManageOrderFlow(req.user)) {
+    return fail(res, 'No permission', 403);
+  }
+
+  const id = Number(req.params.id);
+  const target = await fetchOrderById(id);
+  if (!target || Number(target.is_deleted) === 1) {
+    return fail(res, 'Order not found', 404);
+  }
+  if (!isGarbageOrderRecord(target)) {
+    return fail(res, 'Only garbage orders can be restored', 400);
+  }
+
+  const restoreStatus = normalizeStatus(req.body?.restore_status || req.body?.status || 'pending_contact');
+  if (!GARBAGE_RESTORE_TARGET_STATUSES.has(restoreStatus)) {
+    return fail(res, 'restore_status parameter is invalid', 400);
+  }
+
+  req.body = {
+    ...(req.body || {}),
+    status: restoreStatus,
+    block_device: false,
+  };
+  req.garbageOrderAction = 'restore';
+  return updateOrderStatus(req, res);
 }
 
 async function createOrder(req, res) {
   if (req.user && !canCreateOrder(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const payload = normalizeOrderPayload(req.body || {});
   if (!payload.contact || !payload.order_info || !Number.isFinite(payload.order_amount) || payload.order_amount <= 0) {
-    return fail(res, '缺少必填字段', 400);
+    return fail(res, '缂哄皯蹇呭～瀛楁', 400);
   }
 
   const clientIp = getClientIp(req);
@@ -1686,7 +1819,7 @@ async function createOrder(req, res) {
       );
     }
 
-    await createNotification('新订单提醒', `订单${insertedId}已创建，状态：${status}`, insertedId, Number(store.id), conn, {
+    await createNotification('New order created', 'Order ' + insertedId + ' created, status: ' + status, insertedId, Number(store.id), conn, {
       type: isOnlineSource ? 'online_order_created' : 'order_created',
       source_store_name: store.name,
       source_contact: payload.is_anonymous ? null : payload.contact,
@@ -1749,7 +1882,7 @@ async function createOrder(req, res) {
 
   await writeOperationLog(req, {
     action: 'orders.create',
-    detail: `新增订单 ${row?.order_no || insertedId}`,
+    detail: `鏂板璁㈠崟 ${row?.order_no || insertedId}`,
     target_type: 'order',
     target_id: insertedId,
     after: row,
@@ -1783,37 +1916,37 @@ async function createOrder(req, res) {
     source_identifier: resolvedStore.request_store_key || resolvedStore.store_key,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '订单创建成功');
+  return ok(res, applyOrderFieldPermissions(req.user, row), '璁㈠崟鍒涘缓鎴愬姛');
 }
 
 async function updateOrderStatus(req, res) {
   if (!canManageOrderFlow(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const targetStatus = normalizeStatus(req.body?.status);
   if (!ORDER_STATUSES.includes(targetStatus)) {
-    return fail(res, '状态参数无效', 400);
+    return fail(res, 'status parameter is invalid', 400);
   }
 
   const target = await fetchOrderById(id);
   if (!target || Number(target.is_deleted) === 1) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
 
   const before = { ...target };
   const incomingRevised = parseIncomingRevisedAmount(req.body || {}, target.revised_amount);
   const incomingProblemRemark = pickIncomingProblemRemark(req.body || {}, target.problem_remark);
   const incomingOrderRemark = pickExplicitOrderRemark(req.body || {}, target.order_remark);
-  const garbageReason = pickGarbageOrderReason(req.body || {}) || '垃圾订单';
+  const garbageReason = pickGarbageOrderReason(req.body || {}) || '鍨冨溇璁㈠崟';
   const garbageRemark = pickGarbageOrderRemark(req.body || {});
   const garbageBlock = targetStatus === 'garbage' ? resolveGarbageDeviceBlockOptions(req.body || {}) : null;
   if (garbageBlock?.error) {
     return fail(res, garbageBlock.error, 400);
   }
   if (targetStatus === 'garbage' && garbageBlock?.shouldBlock && !canLinkGarbageOrderDeviceBlock(req.user)) {
-    return fail(res, '无权限联动设备拉黑', 403);
+    return fail(res, 'No permission to link device block', 403);
   }
   const hasAnonymousFlag = hasOwn(req.body, 'is_anonymous') || hasOwn(req.body, 'anonymous');
   const incomingAnonymous = hasAnonymousFlag
@@ -1839,6 +1972,7 @@ async function updateOrderStatus(req, res) {
     junk_reason: target.junk_reason,
     review_status: target.review_status,
   };
+  const garbageOrderActionContext = getGarbageOrderActionContext(req, target, targetStatus);
   const nextRiskSnapshot =
     targetStatus === 'garbage'
       ? mergeRiskSnapshot(currentRiskSnapshot, {
@@ -1851,13 +1985,15 @@ async function updateOrderStatus(req, res) {
           is_junk_order: 1,
           junk_reason: garbageReason,
         })
-      : {
-          ...currentRiskSnapshot,
-          is_junk_order: 0,
-          junk_reason: null,
-          review_status:
-            currentRiskSnapshot.review_status === 'junk' ? 'normal' : currentRiskSnapshot.review_status || 'normal',
-        };
+      : garbageOrderActionContext === 'restore'
+        ? buildRestoredGarbageRiskSnapshot(currentRiskSnapshot)
+        : {
+            ...currentRiskSnapshot,
+            is_junk_order: 0,
+            junk_reason: null,
+            review_status:
+              currentRiskSnapshot.review_status === 'junk' ? 'normal' : currentRiskSnapshot.review_status || 'normal',
+          };
 
   await transaction(async (conn) => {
     const nextRevised = incomingRevised;
@@ -1957,13 +2093,60 @@ async function updateOrderStatus(req, res) {
     await applyOrderRiskSnapshot(id, nextRiskSnapshot, { conn });
 
     if (targetStatus !== 'garbage') {
+      if (garbageOrderActionContext === 'restore') {
+        await recordDeviceRiskEvent(
+          {
+            device_id: isValidDeviceId(normalizedGarbageDeviceId) ? normalizedGarbageDeviceId : null,
+            fingerprint_hash: nextRiskSnapshot.fingerprint_hash || currentRiskSnapshot.fingerprint_hash || null,
+            source: target.source || target.store_key || null,
+            store_key: target.store_key || null,
+            order_id: id,
+            order_no: target.order_no,
+            event_type: 'garbage_order_restored',
+            risk_score: nextRiskSnapshot.risk_score,
+            risk_level: nextRiskSnapshot.risk_level,
+            risk_flags: nextRiskSnapshot.risk_flags,
+            contact_value: target.contact,
+            customer_name: target.customer_nickname,
+            meta_json: {
+              previous_status: before.status || null,
+              restored_status: targetStatus,
+              junk_reason: before.junk_reason || null,
+            },
+          },
+          { conn }
+        );
+      }
       deviceLinkResult.status = 'not_applicable';
       return;
     }
 
     if (!isValidDeviceId(normalizedGarbageDeviceId)) {
+      await recordDeviceRiskEvent(
+        {
+          device_id: null,
+          fingerprint_hash: nextRiskSnapshot.fingerprint_hash || currentRiskSnapshot.fingerprint_hash || null,
+          source: target.source || target.store_key || null,
+          store_key: target.store_key || null,
+          order_id: id,
+          order_no: target.order_no,
+          event_type: garbageOrderActionContext === 'update_reason' ? 'garbage_order_reason_updated' : 'garbage_order',
+          risk_score: nextRiskSnapshot.risk_score,
+          risk_level: nextRiskSnapshot.risk_level,
+          risk_flags: nextRiskSnapshot.risk_flags,
+          contact_value: target.contact,
+          customer_name: target.customer_nickname,
+          meta_json: {
+            reason: garbageReason,
+            remark: garbageRemark,
+            has_device_id: false,
+            sync_block_requested: Boolean(garbageBlock?.shouldBlock),
+          },
+        },
+        { conn }
+      );
       deviceLinkResult.status = 'skipped';
-      deviceLinkResult.warning = '该订单无设备标识，已标记为垃圾订单，但无法联动设备拉黑';
+      deviceLinkResult.warning = 'Order has no device_id. Garbage order was marked, but device block was skipped.';
       return;
     }
 
@@ -1981,7 +2164,7 @@ async function updateOrderStatus(req, res) {
         risk_flags: nextRiskSnapshot.risk_flags,
         contact_value: target.contact,
         last_abnormal_at: new Date(),
-        last_abnormal_reason: '垃圾订单',
+        last_abnormal_reason: '鍨冨溇璁㈠崟',
         reason: garbageReason,
         remark: garbageRemark,
         operator: req.user,
@@ -2011,20 +2194,45 @@ async function updateOrderStatus(req, res) {
       },
       { conn }
     );
-    await recordRiskSnapshotEvents(
-      nextRiskSnapshot,
-      {
-        device_id: normalizedGarbageDeviceId,
-        fingerprint_hash: nextRiskSnapshot.fingerprint_hash,
-        source: target.source || target.store_key || null,
-        store_key: target.store_key || null,
-        order_id: id,
-        order_no: target.order_no,
-        contact_value: target.contact,
-        customer_name: target.customer_nickname,
-      },
-      { conn }
-    );
+    if (garbageOrderActionContext === 'mark') {
+      await recordRiskSnapshotEvents(
+        nextRiskSnapshot,
+        {
+          device_id: normalizedGarbageDeviceId,
+          fingerprint_hash: nextRiskSnapshot.fingerprint_hash,
+          source: target.source || target.store_key || null,
+          store_key: target.store_key || null,
+          order_id: id,
+          order_no: target.order_no,
+          contact_value: target.contact,
+          customer_name: target.customer_nickname,
+        },
+        { conn }
+      );
+    } else {
+      await recordDeviceRiskEvent(
+        {
+          device_id: normalizedGarbageDeviceId,
+          fingerprint_hash: nextRiskSnapshot.fingerprint_hash,
+          source: target.source || target.store_key || null,
+          store_key: target.store_key || null,
+          order_id: id,
+          order_no: target.order_no,
+          event_type: 'garbage_order_reason_updated',
+          risk_score: nextRiskSnapshot.risk_score,
+          risk_level: nextRiskSnapshot.risk_level,
+          risk_flags: nextRiskSnapshot.risk_flags,
+          contact_value: target.contact,
+          customer_name: target.customer_nickname,
+          meta_json: {
+            reason: garbageReason,
+            remark: garbageRemark,
+            sync_block_requested: Boolean(garbageBlock?.shouldBlock),
+          },
+        },
+        { conn }
+      );
+    }
 
     if (garbageBlock?.shouldBlock) {
       await blockDevice(
@@ -2060,7 +2268,7 @@ async function updateOrderStatus(req, res) {
   if (targetStatus === 'completed' && String(before.status) !== 'completed') {
     const completedType = buildCompletedNotificationType(before.status);
     const completedTitle = buildCompletedNotificationTitle(before.status);
-    await createNotification(completedTitle, `订单${id}已完成`, id, Number(row?.store_id || before.store_id), null, {
+    await createNotification(completedTitle, 'Order ' + id + ' completed', id, Number(row?.store_id || before.store_id), null, {
       type: completedType,
       source_store_name: row?.store_name || before.store_name || null,
       source_contact: normalizeAnonymousFlag(row?.is_anonymous ?? before.is_anonymous)
@@ -2092,8 +2300,14 @@ async function updateOrderStatus(req, res) {
   const statusAction =
     String(before.status) === 'problem' && targetStatus === 'completed'
       ? 'orders.problem_complete'
-      : targetStatus === 'garbage'
+      : garbageOrderActionContext === 'mark'
         ? 'orders.mark_garbage'
+        : garbageOrderActionContext === 'update_reason'
+          ? 'orders.update_garbage_reason'
+          : garbageOrderActionContext === 'restore'
+            ? 'orders.restore_garbage_to_normal'
+            : targetStatus === 'garbage'
+              ? 'orders.mark_garbage'
         : 'orders.update_status';
   const responseRow =
     targetStatus === 'garbage'
@@ -2102,13 +2316,26 @@ async function updateOrderStatus(req, res) {
           device_link_result: deviceLinkResult,
         }
       : row;
+  const statusDetail =
+    statusAction === 'orders.problem_complete'
+      ? 'Complete problem order: ' + id
+      : statusAction === 'orders.update_garbage_reason'
+        ? 'Update garbage order reason: ' + id
+        : statusAction === 'orders.restore_garbage_to_normal'
+          ? 'Restore garbage order to normal: ' + id + ' ' + before.status + ' -> ' + targetStatus
+          : 'Update order status: ' + id + ' ' + before.status + ' -> ' + targetStatus;
+  const successMessage =
+    statusAction === 'orders.mark_garbage'
+      ? 'Garbage order marked successfully'
+      : statusAction === 'orders.restore_garbage_to_normal'
+        ? 'Garbage order restored to normal successfully'
+        : statusAction === 'orders.update_garbage_reason'
+          ? 'Garbage order reason updated successfully'
+          : 'Order status updated successfully';
 
   await writeOperationLog(req, {
     action: statusAction,
-    detail:
-      statusAction === 'orders.problem_complete'
-        ? `完成问题订单：订单${id}`
-        : `修改订单状态：订单${id} ${before.status} -> ${targetStatus}`,
+    detail: statusDetail,
     target_type: 'order',
     target_id: id,
     before,
@@ -2133,12 +2360,12 @@ async function updateOrderStatus(req, res) {
     });
   }
 
-  return ok(res, applyOrderFieldPermissions(req.user, responseRow), '订单状态更新成功');
+  return ok(res, applyOrderFieldPermissions(req.user, responseRow), successMessage);
 }
 
 async function updateOrderAmount(req, res) {
   if (!canUpdateAmount(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   req.body = {
@@ -2157,7 +2384,7 @@ async function updateOrderAmount(req, res) {
 
 async function updateOrderRemark(req, res) {
   if (!canEditOrderRemark(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
@@ -2175,15 +2402,15 @@ async function updateOrderRemark(req, res) {
   const hasAnonymousFlag = hasOwn(body, 'is_anonymous') || hasOwn(body, 'anonymous');
 
   if (!hasRemark && !hasCustomerNickname && !hasAnonymousFlag) {
-    return fail(res, '必须提供 order_remark、customer_nickname 或 is_anonymous', 400);
+    return fail(res, '蹇呴』鎻愪緵 order_remark銆乧ustomer_nickname 鎴?is_anonymous', 400);
   }
 
   const target = await fetchOrderById(id);
   if (!target || Number(target.is_deleted) === 1) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
   if (!canReadOrder(req.user, target)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const nextOrderRemark = hasRemark
@@ -2214,19 +2441,19 @@ async function updateOrderRemark(req, res) {
   const row = await fetchOrderById(id);
   await writeOperationLog(req, {
     action: 'orders.update_remark',
-    detail: `更新订单备注：订单${id}`,
+    detail: `鏇存柊璁㈠崟澶囨敞锛氳鍗?{id}`,
     target_type: 'order',
     target_id: id,
     before: target,
     after: row,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '订单备注更新成功');
+  return ok(res, applyOrderFieldPermissions(req.user, row), '璁㈠崟澶囨敞鏇存柊鎴愬姛');
 }
 
 async function updateProblemOrder(req, res) {
   if (!canEditProblem(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
@@ -2239,15 +2466,15 @@ async function updateProblemOrder(req, res) {
 
   const target = await fetchOrderById(id);
   if (!target || Number(target.is_deleted) === 1) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
 
   if (String(target.status) !== 'problem') {
-    return fail(res, '仅问题订单可修改修正信息', 400);
+    return fail(res, '浠呴棶棰樿鍗曞彲淇敼淇淇℃伅', 400);
   }
 
   if (!hasRevisedAmount && !hasProblemRemark && !hasAnonymousFlag) {
-    return ok(res, applyOrderFieldPermissions(req.user, target), '问题订单未发生变更');
+    return ok(res, applyOrderFieldPermissions(req.user, target), 'Problem order unchanged');
   }
 
   let revisedAmount = revisedAmountOrNull(target.revised_amount);
@@ -2258,7 +2485,7 @@ async function updateProblemOrder(req, res) {
     } else {
       const parsed = revisedAmountOrNull(revisedRaw);
       if (parsed == null) {
-        return fail(res, 'revised_amount 参数无效', 400);
+        return fail(res, 'revised_amount 鍙傛暟鏃犳晥', 400);
       }
       revisedAmount = parsed;
     }
@@ -2298,28 +2525,28 @@ async function updateProblemOrder(req, res) {
 
   await writeOperationLog(req, {
     action: 'orders.update_problem',
-    detail: `保存问题订单修改：订单${id}`,
+    detail: `淇濆瓨闂璁㈠崟淇敼锛氳鍗?{id}`,
     target_type: 'order',
     target_id: id,
     before,
     after: row,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '问题订单更新成功');
+  return ok(res, applyOrderFieldPermissions(req.user, row), '闂璁㈠崟鏇存柊鎴愬姛');
 }
 
 async function completeProblemOrder(req, res) {
   if (!canCompleteProblem(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const target = await fetchOrderById(id);
   if (!target || Number(target.is_deleted) === 1) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
   if (String(target.status) !== 'problem') {
-    return fail(res, '仅问题订单可通过此接口完成', 400);
+    return fail(res, 'Only problem orders can be completed via this endpoint', 400);
   }
 
   req.body = { ...(req.body || {}), status: 'completed' };
@@ -2328,21 +2555,21 @@ async function completeProblemOrder(req, res) {
 
 async function withdrawProblemOrder(req, res) {
   if (!canWithdrawProblem(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const fallbackStatus = normalizeStatus(req.body?.status || 'pending_contact');
   if (!['pending_contact', 'processing'].includes(fallbackStatus)) {
-    return fail(res, '撤回状态参数无效', 400);
+    return fail(res, 'restore status parameter is invalid', 400);
   }
 
   const target = await fetchOrderById(id);
   if (!target || Number(target.is_deleted) === 1) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
   if (!['problem', 'completed'].includes(String(target.status))) {
-    return fail(res, '仅问题订单或已完成订单可撤回', 400);
+    return fail(res, '浠呴棶棰樿鍗曟垨宸插畬鎴愯鍗曞彲鎾ゅ洖', 400);
   }
 
   const before = { ...target };
@@ -2360,7 +2587,7 @@ async function withdrawProblemOrder(req, res) {
   });
 
   const row = await fetchOrderById(id);
-  await createNotification('问题订单已撤回', `问题订单${id}已撤回`, id, Number(row?.store_id || target.store_id), null, {
+  await createNotification('Problem order withdrawn', 'Problem order ' + id + ' has been withdrawn', id, Number(row?.store_id || target.store_id), null, {
     type: 'problem_order_withdrawn',
     source_store_name: row?.store_name || target.store_name || null,
     source_contact: normalizeAnonymousFlag(row?.is_anonymous ?? target.is_anonymous)
@@ -2385,30 +2612,30 @@ async function withdrawProblemOrder(req, res) {
 
   await writeOperationLog(req, {
     action: 'orders.problem_withdraw',
-    detail: `撤回订单：订单${id} -> ${fallbackStatus}`,
+    detail: `鎾ゅ洖璁㈠崟锛氳鍗?{id} -> ${fallbackStatus}`,
     target_type: 'order',
     target_id: id,
     before,
     after: row,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '问题订单撤回成功');
+  return ok(res, applyOrderFieldPermissions(req.user, row), '闂璁㈠崟鎾ゅ洖鎴愬姛');
 }
 
 async function assignShop(req, res) {
   if (!canAssignPlayShop(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const shopRawId = pickPlayShopId(req.body || {});
   if (typeof shopRawId === 'undefined') {
-    return fail(res, '必须提供 play_shop_id', 400);
+    return fail(res, '蹇呴』鎻愪緵 play_shop_id', 400);
   }
 
   const target = await fetchOrderById(id);
   if (!target || Number(target.is_deleted) === 1) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
   const before = { ...target };
 
@@ -2417,7 +2644,7 @@ async function assignShop(req, res) {
   if (!unassign) {
     playShop = await getPlayShopById(shopRawId);
     if (!playShop) {
-      return fail(res, '陪玩店不存在', 404);
+      return fail(res, '闄帺搴椾笉瀛樺湪', 404);
     }
   }
 
@@ -2461,14 +2688,14 @@ async function assignShop(req, res) {
   const row = await fetchOrderById(id);
   await writeOperationLog(req, {
     action: 'orders.assign_play_shop',
-    detail: `派单陪玩店：订单${id} -> ${playShop ? playShop.name || playShop.id : '未分配'}`,
+    detail: 'Assign play shop: order ' + id + ' -> ' + (playShop ? playShop.name || playShop.id : 'unassigned'),
     target_type: 'order',
     target_id: id,
     before,
     after: row,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '陪玩店分配成功');
+  return ok(res, applyOrderFieldPermissions(req.user, row), 'Play shop assigned successfully');
 }
 
 async function assignPlayShop(req, res) {
@@ -2477,16 +2704,16 @@ async function assignPlayShop(req, res) {
 
 async function recycleOrder(req, res) {
   if (!canDeleteOrder(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const target = await fetchOrderById(id);
   if (!target) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
   if (Number(target.is_deleted) === 1) {
-    return fail(res, '订单已删除', 400);
+    return fail(res, 'Order already deleted', 400);
   }
 
   await transaction(async (conn) => {
@@ -2514,25 +2741,25 @@ async function recycleOrder(req, res) {
   const row = await fetchOrderById(id);
   await writeOperationLog(req, {
     action: 'orders.delete',
-    detail: `删除订单：订单${id}`,
+    detail: `鍒犻櫎璁㈠崟锛氳鍗?{id}`,
     target_type: 'order',
     target_id: id,
     before: target,
     after: row,
   });
 
-  return ok(res, { order_id: id }, '订单删除成功');
+  return ok(res, { order_id: id }, '璁㈠崟鍒犻櫎鎴愬姛');
 }
 
 async function restoreOrder(req, res) {
   if (!canRestoreOrder(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const target = await fetchOrderById(id);
   if (!target) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
 
   const recycleRows = await query(
@@ -2544,7 +2771,7 @@ async function restoreOrder(req, res) {
     { order_id: id }
   );
   if (!recycleRows.length) {
-    return fail(res, '回收记录不存在', 404);
+    return fail(res, 'Recycle record not found', 404);
   }
 
   const recycleId = Number(recycleRows[0].id);
@@ -2563,25 +2790,25 @@ async function restoreOrder(req, res) {
   const row = await fetchOrderById(id);
   await writeOperationLog(req, {
     action: 'orders.restore',
-    detail: `恢复订单：订单${id}`,
+    detail: `鎭㈠璁㈠崟锛氳鍗?{id}`,
     target_type: 'order',
     target_id: id,
     before: target,
     after: row,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '订单恢复成功');
+  return ok(res, applyOrderFieldPermissions(req.user, row), '璁㈠崟鎭㈠鎴愬姛');
 }
 
 async function permanentDeleteOrder(req, res) {
   if (!canDeleteOrder(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const target = await fetchOrderById(id);
   if (!target) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
 
   await transaction(async (conn) => {
@@ -2593,14 +2820,14 @@ async function permanentDeleteOrder(req, res) {
 
   await writeOperationLog(req, {
     action: 'orders.permanent_delete',
-    detail: `永久删除订单：订单${id}`,
+    detail: `姘镐箙鍒犻櫎璁㈠崟锛氳鍗?{id}`,
     target_type: 'order',
     target_id: id,
     before: target,
     after: null,
   });
 
-  return ok(res, { order_id: id }, '订单永久删除成功');
+  return ok(res, { order_id: id }, '璁㈠崟姘镐箙鍒犻櫎鎴愬姛');
 }
 
 async function confirmOrder(req, res) {
@@ -2614,13 +2841,13 @@ async function deleteOrder(req, res) {
 
 async function updateOrderEffective(req, res) {
   if (!hasRole(req.user, 'super_admin') || !canOperateOrders(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const id = Number(req.params.id);
   const target = await fetchOrderById(id);
   if (!target) {
-    return fail(res, '订单不存在', 404);
+    return fail(res, 'Order not found', 404);
   }
 
   await query(
@@ -2637,31 +2864,31 @@ async function updateOrderEffective(req, res) {
   const row = await fetchOrderById(id);
   await writeOperationLog(req, {
     action: 'orders.update_effective',
-    detail: `修改订单生效状态：订单${id} -> ${Number(req.body?.is_effective) ? '生效' : '失效'}`,
+    detail: `淇敼璁㈠崟鐢熸晥鐘舵€侊細璁㈠崟${id} -> ${Number(req.body?.is_effective) ? '鐢熸晥' : '澶辨晥'}`,
     target_type: 'order',
     target_id: id,
     before: target,
     after: row,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '订单生效状态更新成功');
+  return ok(res, applyOrderFieldPermissions(req.user, row), 'Order effective status updated successfully');
 }
 
 async function batchUpdateOrderStatus(req, res) {
   if (!canBatchUpdateStatus(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const orderIds = parseOrderIds(req.body?.order_ids);
   const targetStatus = normalizeStatus(req.body?.status);
   if (!orderIds.length) {
-    return fail(res, '必须提供 order_ids', 400);
+    return fail(res, '蹇呴』鎻愪緵 order_ids', 400);
   }
   if (!ORDER_STATUSES.includes(targetStatus)) {
-    return fail(res, '状态参数无效', 400);
+    return fail(res, 'status parameter is invalid', 400);
   }
   if (targetStatus === 'garbage') {
-    return fail(res, '垃圾订单请逐笔处理，以便确认设备联动策略', 400);
+    return fail(res, 'Garbage orders must be processed one by one so device linkage can be confirmed', 400);
   }
 
   const hasBatchOrderRemark =
@@ -2785,7 +3012,7 @@ async function batchUpdateOrderStatus(req, res) {
       if (targetStatus === 'completed' && previousStatus !== 'completed') {
         const completedType = buildCompletedNotificationType(previousStatus);
         const completedTitle = buildCompletedNotificationTitle(previousStatus);
-        await createNotification(completedTitle, `订单${id}已完成`, id, Number(rows[0].store_id || 0), conn, {
+        await createNotification(completedTitle, 'Order ' + id + ' completed', id, Number(rows[0].store_id || 0), conn, {
           type: completedType,
           source_store_name: store?.name || null,
           source_contact: normalizeAnonymousFlag(rows[0].is_anonymous) ? null : rows[0].contact || null,
@@ -2843,7 +3070,7 @@ async function batchUpdateOrderStatus(req, res) {
 
   await writeOperationLog(req, {
     action: 'orders.batch_status',
-    detail: `批量修改订单状态：${updatedIds.length}条 -> ${targetStatus}`,
+    detail: `鎵归噺淇敼璁㈠崟鐘舵€侊細${updatedIds.length}鏉?-> ${targetStatus}`,
     target_type: 'order',
     target_id: updatedIds.join(','),
     after: {
@@ -2852,17 +3079,17 @@ async function batchUpdateOrderStatus(req, res) {
     },
   });
 
-  return ok(res, { order_ids: updatedIds, status: targetStatus }, '批量状态更新成功');
+  return ok(res, { order_ids: updatedIds, status: targetStatus }, 'Batch status updated successfully');
 }
 
 async function batchDeleteOrders(req, res) {
   if (!canBatchDeleteOrder(req.user)) {
-    return fail(res, '无权限', 403);
+    return fail(res, 'No permission', 403);
   }
 
   const orderIds = parseOrderIds(req.body?.order_ids);
   if (!orderIds.length) {
-    return fail(res, '必须提供 order_ids', 400);
+    return fail(res, '蹇呴』鎻愪緵 order_ids', 400);
   }
 
   const deletedIds = [];
@@ -2892,21 +3119,26 @@ async function batchDeleteOrders(req, res) {
 
   await writeOperationLog(req, {
     action: 'orders.batch_delete',
-    detail: `批量删除订单：${deletedIds.length}条`,
+    detail: 'Batch delete orders: ' + deletedIds.length + ' items',
     target_type: 'order',
     target_id: deletedIds.join(','),
     after: { order_ids: deletedIds },
   });
 
-  return ok(res, { order_ids: deletedIds }, '批量删除成功');
+  return ok(res, { order_ids: deletedIds }, '鎵归噺鍒犻櫎鎴愬姛');
 }
 
 module.exports = {
   ORDER_STATUSES,
   listOrders,
+  listGarbageOrders,
   getOrderById,
+  getGarbageOrderDetail,
   createOrder,
   updateOrderStatus,
+  markOrderAsGarbage,
+  updateGarbageOrderReason,
+  restoreGarbageOrderToNormal,
   batchUpdateOrderStatus,
   batchDeleteOrders,
   updateOrderAmount,
@@ -2923,3 +3155,4 @@ module.exports = {
   deleteOrder,
   updateOrderEffective,
 };
+

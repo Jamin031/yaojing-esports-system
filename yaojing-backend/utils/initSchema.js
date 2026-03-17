@@ -506,6 +506,22 @@ async function ensureDeviceBlockTables() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  const hasDeviceBlockLogActionType = await columnExists('device_block_logs', 'action_type');
+  const hasDeviceBlockLogLegacyAction = await columnExists('device_block_logs', 'action');
+  if (!hasDeviceBlockLogActionType) {
+    await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN action_type VARCHAR(50) NULL`);
+  }
+  if (hasDeviceBlockLogLegacyAction) {
+    await safeQuery(`
+      UPDATE device_block_logs
+      SET action_type = action
+      WHERE (action_type IS NULL OR action_type = '')
+        AND action IS NOT NULL
+        AND action <> ''
+    `);
+  }
+  await safeQuery(`UPDATE device_block_logs SET action_type = 'manual_block' WHERE action_type IS NULL OR action_type = ''`);
+  await safeQuery(`ALTER TABLE device_block_logs MODIFY COLUMN action_type VARCHAR(50) NOT NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN order_id BIGINT UNSIGNED NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN order_no VARCHAR(64) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN fingerprint_hash VARCHAR(128) NULL`);
@@ -524,6 +540,7 @@ async function ensureDeviceBlockTables() {
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN before_status_json JSON NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN after_status_json JSON NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN metadata_json JSON NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_action_created (action_type, created_at)`);
   await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_order_created (order_id, created_at)`);
   await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_fingerprint_created (fingerprint_hash, created_at)`);
 }

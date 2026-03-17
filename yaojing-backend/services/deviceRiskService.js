@@ -453,7 +453,7 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
       device_id: normalized,
       order_id: payload.order_id == null ? null : Number(payload.order_id),
       order_no: trimText(payload.order_no, 64),
-      action_type: trimText(payload.action_type, 50),
+      action_type: trimText(payload.action_type || payload.action, 50),
       action_scope: trimText(payload.action_scope, 20),
       operator_user_id: payload.operator_user_id == null ? null : Number(payload.operator_user_id),
       operator_username: trimText(payload.operator_username, 64),

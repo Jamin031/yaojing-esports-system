@@ -6,6 +6,8 @@ const ACTION_TEXT_MAP = Object.freeze({
   'orders.create': '新增订单',
   'orders.update_status': '修改订单状态',
   'orders.mark_garbage': '标记垃圾订单',
+  'orders.update_garbage_reason': '修改垃圾订单原因',
+  'orders.restore_garbage_to_normal': '恢复垃圾订单为正常订单',
   'orders.update_remark': '修改订单备注',
   'orders.problem_complete': '完成问题订单',
   'orders.update_problem': '保存问题订单修改',

@@ -459,6 +459,7 @@ import {
   createOrderApi,
   deleteOrderApi,
   getOrdersApi,
+  markOrderAsGarbageApi,
   restoreOrderApi,
   updateOrderStatusApi,
 } from '../../api/orders';
@@ -1223,7 +1224,7 @@ async function submitGarbageOrder() {
       canLinkGarbageDevice.value &&
       hasDeviceIdentifier(garbageDialog.row);
     const isPermanent = garbageDialog.form.duration === 'permanent';
-    const resp = await updateOrderStatusApi(garbageDialog.row.id, {
+    const resp = await markOrderAsGarbageApi(garbageDialog.row.id, {
       status: 'garbage',
       block_device: shouldBlock,
       duration_minutes: shouldBlock ? (isPermanent ? 'permanent' : Number(garbageDialog.form.duration)) : undefined,

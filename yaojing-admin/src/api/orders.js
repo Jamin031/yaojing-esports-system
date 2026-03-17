@@ -8,6 +8,21 @@ export function getOrdersApi(params) {
   });
 }
 
+export function getGarbageOrdersApi(params) {
+  return request({
+    url: '/api/orders/garbage',
+    method: 'get',
+    params,
+  });
+}
+
+export function getGarbageOrderDetailApi(orderId) {
+  return request({
+    url: `/api/orders/garbage/${orderId}`,
+    method: 'get',
+  });
+}
+
 export function createOrderApi(data) {
   return request({
     url: '/api/orders',
@@ -25,6 +40,30 @@ export function updateOrderStatusApi(orderId, payload) {
     url: `/api/orders/${orderId}/status`,
     method: 'patch',
     data,
+  });
+}
+
+export function markOrderAsGarbageApi(orderId, payload = {}) {
+  return request({
+    url: `/api/orders/${orderId}/mark-garbage`,
+    method: 'patch',
+    data: payload,
+  });
+}
+
+export function updateGarbageOrderReasonApi(orderId, payload = {}) {
+  return request({
+    url: `/api/orders/${orderId}/garbage-reason`,
+    method: 'patch',
+    data: payload,
+  });
+}
+
+export function restoreGarbageOrderApi(orderId, payload = {}) {
+  return request({
+    url: `/api/orders/${orderId}/restore-normal`,
+    method: 'patch',
+    data: payload,
   });
 }
 

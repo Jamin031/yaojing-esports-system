@@ -333,7 +333,12 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { getOrdersApi, updateOrderStatusApi } from '../../api/orders';
+import {
+  getGarbageOrderDetailApi,
+  getGarbageOrdersApi,
+  restoreGarbageOrderApi,
+  updateGarbageOrderReasonApi,
+} from '../../api/orders';
 import {
   blockDeviceApi,
   getDeviceProfileApi,
@@ -601,7 +606,7 @@ async function enrichDeviceProfiles(list) {
 async function fetchRows() {
   loading.value = true;
   try {
-    const resp = await getOrdersApi(buildQuery());
+    const resp = await getGarbageOrdersApi(buildQuery());
     const list = getList(resp);
     rows.value = list;
     pagination.total = Number(getTotal(resp));
@@ -648,11 +653,9 @@ async function submitReason() {
   reasonDialog.submitting = true;
   try {
     const reason = resolveReasonValue(reasonDialog.form);
-    await updateOrderStatusApi(reasonDialog.row.id, {
-      status: 'garbage',
+    await updateGarbageOrderReasonApi(reasonDialog.row.id, {
       reason,
       remark: reasonDialog.form.remark || undefined,
-      block_device: false,
     });
     ElMessage.success('垃圾原因已更新');
     reasonDialog.visible = false;
@@ -723,8 +726,8 @@ async function restoreOrder(row) {
   await ElMessageBox.confirm(`确认将订单 ${row.order_no} 恢复为正常订单吗？`, '恢复正常订单', {
     type: 'warning',
   });
-  await updateOrderStatusApi(row.id, {
-    status: 'pending_contact',
+  await restoreGarbageOrderApi(row.id, {
+    restore_status: 'pending_contact',
   });
   ElMessage.success('订单已恢复为正常订单');
   emitAdminSync('order-status-updated', {
@@ -757,10 +760,12 @@ async function openRiskDetail(row) {
 
   detailDrawer.eventsLoading = true;
   try {
-    const [profileResp, eventResp] = await Promise.all([
+    const [detailResp, profileResp, eventResp] = await Promise.all([
+      getGarbageOrderDetailApi(row.id).catch(() => null),
       getDeviceProfileApi(row.device_id).catch(() => null),
       getDeviceRiskEventsApi(row.device_id, { page: 1, page_size: 20 }).catch(() => null),
     ]);
+    detailDrawer.row = detailResp?.data || detailDrawer.row;
     detailDrawer.deviceProfile = profileResp?.data || detailDrawer.deviceProfile;
     detailDrawer.events = getList(eventResp);
   } finally {

@@ -333,6 +333,8 @@ const RISK_EVENT_TEXT_MAP = {
   fingerprint_abnormal_5m: '5分钟内连续异常提交',
   contact_repeat_5m: '联系方式短时重复提交',
   garbage_order: '垃圾订单',
+  garbage_order_reason_updated: '垃圾订单原因更新',
+  garbage_order_restored: '垃圾订单恢复正常',
   invalid_contact_attempt: '无效联系方式提交',
   device_auto_block: '自动封禁设备',
   device_block_hit: '封禁设备再次提交',

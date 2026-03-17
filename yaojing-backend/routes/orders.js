@@ -4,9 +4,14 @@ const { requireAuth, optionalAuth } = require('../middleware/auth');
 const { requireRoles } = require('../middleware/permissions');
 const {
   listOrders,
+  listGarbageOrders,
   getOrderById,
+  getGarbageOrderDetail,
   createOrder,
   updateOrderStatus,
+  markOrderAsGarbage,
+  updateGarbageOrderReason,
+  restoreGarbageOrderToNormal,
   batchUpdateOrderStatus,
   batchDeleteOrders,
   updateOrderAmount,
@@ -28,10 +33,16 @@ const router = express.Router();
 
 // Required APIs
 router.get('/', requireAuth, requireRoles('super_admin', 'admin', 'store_owner', 'customer_service', 'finance'), asyncHandler(listOrders));
+router.get('/garbage', requireAuth, requireRoles('super_admin', 'admin', 'customer_service'), asyncHandler(listGarbageOrders));
+router.get('/garbage/:id', requireAuth, requireRoles('super_admin', 'admin', 'customer_service'), asyncHandler(getGarbageOrderDetail));
 router.get('/:id', requireAuth, requireRoles('super_admin', 'admin', 'store_owner', 'customer_service', 'finance'), asyncHandler(getOrderById));
 router.post('/', optionalAuth, asyncHandler(createOrder));
 router.post('/batch-delete', requireAuth, asyncHandler(batchDeleteOrders));
 router.patch('/batch-status', requireAuth, asyncHandler(batchUpdateOrderStatus));
+router.post('/:id/mark-garbage', requireAuth, requireRoles('super_admin', 'admin', 'customer_service'), asyncHandler(markOrderAsGarbage));
+router.patch('/:id/mark-garbage', requireAuth, requireRoles('super_admin', 'admin', 'customer_service'), asyncHandler(markOrderAsGarbage));
+router.patch('/:id/garbage-reason', requireAuth, requireRoles('super_admin', 'admin', 'customer_service'), asyncHandler(updateGarbageOrderReason));
+router.patch('/:id/restore-normal', requireAuth, requireRoles('super_admin', 'admin', 'customer_service'), asyncHandler(restoreGarbageOrderToNormal));
 
 router.put('/:id/status', requireAuth, asyncHandler(updateOrderStatus));
 router.patch('/:id/status', requireAuth, asyncHandler(updateOrderStatus));
