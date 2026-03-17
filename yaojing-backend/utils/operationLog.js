@@ -1,5 +1,7 @@
 ﻿const { query } = require('../config/db');
 
+const { normalizeIp } = require('../services/antiFraudService');
+
 const ACTION_TEXT_MAP = Object.freeze({
   'orders.create': '新增订单',
   'orders.update_status': '修改订单状态',
@@ -14,6 +16,10 @@ const ACTION_TEXT_MAP = Object.freeze({
   'orders.update_effective': '修改订单生效状态',
   'orders.batch_delete': '批量删除订单',
   'orders.batch_status': '批量修改订单状态',
+  'orders.contact_invalid_attempt': '记录异常联系方式提交',
+  'orders.device_id_missing': '拒绝缺失设备标识的提交',
+  'orders.device_risk_block': '封禁异常下单设备',
+  'orders.device_risk_block_hit': '命中设备封禁限制',
 
   'online_orders.create': '新增线上订单',
 
@@ -45,6 +51,7 @@ const ACTION_TEXT_MAP = Object.freeze({
 const TARGET_TEXT_MAP = Object.freeze({
   order: '订单',
   online_order: '线上订单',
+  order_fraud: '风控',
   user: '用户',
   store: '网吧',
   play_shop: '陪玩店',
@@ -54,8 +61,10 @@ const TARGET_TEXT_MAP = Object.freeze({
 });
 
 function getClientIp(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return forwarded || req.ip || req.socket?.remoteAddress || '';
+  const forwarded = String(req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || '')
+    .split(',')[0]
+    .trim();
+  return normalizeIp(forwarded || req.ip || req.socket?.remoteAddress || '');
 }
 
 function toLimitedString(value, maxLength, fallback = '') {

@@ -118,9 +118,20 @@ CREATE TABLE IF NOT EXISTS order_limits (
   ip VARCHAR(64) NOT NULL,
   device_id VARCHAR(120) NULL,
   browser VARCHAR(255) NULL,
+  limit_type VARCHAR(40) NOT NULL DEFAULT 'order_submit',
+  reason VARCHAR(255) NOT NULL DEFAULT '',
+  contact_value VARCHAR(120) NULL,
+  customer_nickname VARCHAR(80) NULL,
+  store_key VARCHAR(80) NULL,
+  expires_at DATETIME NULL,
+  metadata_json JSON NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_order_limits_ip_created (ip, created_at),
-  KEY idx_order_limits_order (order_id)
+  KEY idx_order_limits_device_created (device_id, created_at),
+  KEY idx_order_limits_order (order_id),
+  KEY idx_order_limits_ip_type_expires (ip, limit_type, expires_at),
+  KEY idx_order_limits_device_type_created (device_id, limit_type, created_at),
+  KEY idx_order_limits_device_type_expires (device_id, limit_type, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS recycle_orders (

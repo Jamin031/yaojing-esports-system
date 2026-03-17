@@ -12,6 +12,7 @@ const { buildPagination, ok, fail } = require('../utils/http');
 const { getClientIp, writeOperationLog } = require('../utils/operationLog');
 const {
   STORE_SOURCE_NOT_FOUND_MESSAGE,
+  resolveRequestStoreLocator,
   resolveStore,
   isOnlineStore,
 } = require('../utils/storeResolver');
@@ -21,6 +22,17 @@ const {
   revokeFinishedNotification,
 } = require('../services/notificationService');
 const { emitNewOrderCreated } = require('../services/adminRealtimeService');
+const {
+  BLOCKED_DEVICE_MESSAGE,
+  DEVICE_ID_REQUIRED_MESSAGE,
+  INVALID_CONTACT_MESSAGE,
+  clearOrExpireDeviceBlock,
+  evaluateContact,
+  getRequestDeviceId,
+  handleInvalidContactAttempt,
+  recordBlockedAttempt,
+  recordMissingDeviceId,
+} = require('../services/antiFraudService');
 
 const DEFAULT_PLATFORM_RATE = Number(process.env.DEFAULT_PLATFORM_RATE || 0.05);
 const ORDER_STATUSES = ['pending_contact', 'processing', 'problem', 'completed', 'cancelled'];
@@ -1110,6 +1122,153 @@ async function createOrder(req, res) {
   const payload = normalizeOrderPayload(req.body || {});
   if (!payload.contact || !payload.order_info || !Number.isFinite(payload.order_amount) || payload.order_amount <= 0) {
     return fail(res, '缺少必填字段', 400);
+  }
+
+  const clientIp = getClientIp(req);
+  const sourceDomain = getRequestSourceDomain(req);
+  const requestStoreLocator = resolveRequestStoreLocator(req, {
+    storeKey: req.body?.store_key || req.body?.storeKey,
+  });
+
+  const requestDevice = getRequestDeviceId(req);
+  const riskContext = {
+    browser: req.headers?.['user-agent'] || '',
+    contact_value: payload.contact,
+    customer_nickname: payload.customer_nickname,
+    device_id: requestDevice.deviceId || null,
+    ip: clientIp,
+    is_anonymous: payload.is_anonymous,
+    runtime_mode: requestStoreLocator.runtimeMode || null,
+    source: requestStoreLocator.storeKey || sourceDomain || null,
+    source_domain: sourceDomain,
+    store_key: requestStoreLocator.storeKey || null,
+  };
+
+  if (!requestDevice.isValid) {
+    await recordMissingDeviceId({
+      ...riskContext,
+      reason: 'missing or invalid device_id',
+      metadata: {
+        raw_device_id: requestDevice.raw || null,
+        rule: 'device_id_required',
+      },
+    });
+
+    await writeOperationLog(req, {
+      action: 'orders.device_id_missing',
+      detail: 'Rejected order submit because device_id is missing or invalid',
+      target_type: 'order_fraud',
+      target_id: requestDevice.raw || 'missing-device-id',
+      after: {
+        contact_value: payload.contact,
+        customer_nickname: payload.customer_nickname,
+        raw_device_id: requestDevice.raw || null,
+        source_domain: sourceDomain,
+        store_key: requestStoreLocator.storeKey || null,
+      },
+    });
+
+    return fail(res, DEVICE_ID_REQUIRED_MESSAGE, 400, {
+      error_code: 'DEVICE_ID_REQUIRED',
+    });
+  }
+
+  const blockedDeviceInfo = await clearOrExpireDeviceBlock(requestDevice.deviceId);
+  if (blockedDeviceInfo.blocked) {
+    if (blockedDeviceInfo.retry_after_seconds > 0) {
+      res.set('Retry-After', String(blockedDeviceInfo.retry_after_seconds));
+    }
+
+    await recordBlockedAttempt(requestDevice.deviceId, {
+      ...riskContext,
+      expires_at: blockedDeviceInfo.expires_at,
+      reason: 'device is currently blocked',
+      metadata: {
+        blocked_until: blockedDeviceInfo.expires_at,
+        retry_after_seconds: blockedDeviceInfo.retry_after_seconds,
+        rule: 'device_block_hit',
+      },
+    });
+
+    await writeOperationLog(req, {
+      action: 'orders.device_risk_block_hit',
+      detail: `Device ${requestDevice.deviceId} hit active order anti-fraud block`,
+      target_type: 'order_fraud',
+      target_id: requestDevice.deviceId,
+      after: {
+        blocked_until: blockedDeviceInfo.expires_at,
+        device_id: requestDevice.deviceId,
+        retry_after_seconds: blockedDeviceInfo.retry_after_seconds,
+        source_domain: sourceDomain,
+        store_key: blockedDeviceInfo.store_key || requestStoreLocator.storeKey || null,
+      },
+    });
+
+    return fail(res, BLOCKED_DEVICE_MESSAGE, 429, {
+      error_code: 'ORDER_DEVICE_BLOCKED',
+      retry_after_seconds: blockedDeviceInfo.retry_after_seconds,
+      blocked_until: blockedDeviceInfo.expires_at,
+    });
+  }
+
+  const deviceContactAssessment = evaluateContact(payload.contact);
+  if (deviceContactAssessment.isSuspicious) {
+    const riskResult = await handleInvalidContactAttempt(requestDevice.deviceId, {
+      ...riskContext,
+      contact_assessment: deviceContactAssessment,
+      reason: deviceContactAssessment.reasonSummary || deviceContactAssessment.reasons.join(','),
+    });
+
+    if (riskResult.action === 'blocked') {
+      if (riskResult.blockInfo?.retry_after_seconds > 0) {
+        res.set('Retry-After', String(riskResult.blockInfo.retry_after_seconds));
+      }
+
+      await writeOperationLog(req, {
+        action: 'orders.device_risk_block',
+        detail: `Device ${requestDevice.deviceId} was blocked after repeated invalid contact submits`,
+        target_type: 'order_fraud',
+        target_id: requestDevice.deviceId,
+        after: {
+          attempt_count: riskResult.attemptCount,
+          blocked_until: riskResult.blockInfo?.expires_at || null,
+          contact_type: deviceContactAssessment.contactType,
+          contact_value: payload.contact,
+          device_id: requestDevice.deviceId,
+          reasons: deviceContactAssessment.reasons,
+          source_domain: sourceDomain,
+          store_key: requestStoreLocator.storeKey || null,
+        },
+      });
+
+      return fail(res, BLOCKED_DEVICE_MESSAGE, 429, {
+        error_code: 'ORDER_DEVICE_BLOCKED',
+        retry_after_seconds: riskResult.blockInfo?.retry_after_seconds || 0,
+        blocked_until: riskResult.blockInfo?.expires_at || null,
+      });
+    }
+
+    await writeOperationLog(req, {
+      action: 'orders.contact_invalid_attempt',
+      detail: `Rejected invalid contact order submit from device ${requestDevice.deviceId}`,
+      target_type: 'order_fraud',
+      target_id: requestDevice.deviceId,
+      after: {
+        attempt_count: riskResult.attemptCount,
+        contact_type: deviceContactAssessment.contactType,
+        contact_value: payload.contact,
+        customer_nickname: payload.customer_nickname,
+        device_id: requestDevice.deviceId,
+        reasons: deviceContactAssessment.reasons,
+        source_domain: sourceDomain,
+        store_key: requestStoreLocator.storeKey || null,
+      },
+    });
+
+    return fail(res, INVALID_CONTACT_MESSAGE, 400, {
+      error_code: 'INVALID_CONTACT',
+      invalid_attempt_count: riskResult.attemptCount,
+    });
   }
 
   const status = 'pending_contact';

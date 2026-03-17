@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { resolveApiConfig, resolveApiRequestUrl } from './apiBase'
+import { DEVICE_ID_HEADER, getOrCreateDeviceId } from './deviceId'
 
 const API_CONFIG = resolveApiConfig()
 
@@ -15,6 +16,12 @@ request.interceptors.request.use(
   (config) => {
     if (typeof config.url === 'string') {
       config.url = resolveApiRequestUrl(config.url, API_CONFIG)
+    }
+
+    const deviceId = getOrCreateDeviceId()
+    if (deviceId) {
+      config.headers = config.headers || {}
+      config.headers[DEVICE_ID_HEADER] = deviceId
     }
 
     if (!shouldAttachToken(config)) {
