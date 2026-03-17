@@ -23,6 +23,12 @@ const DEVICE_ACTION_TYPES = Object.freeze({
   GARBAGE_ORDER_MARKED: 'garbage_order_marked',
 });
 
+const DEVICE_LOG_ACTIONS = Object.freeze({
+  BLOCK: 'block',
+  UNBLOCK: 'unblock',
+  MARK: 'mark',
+});
+
 const DEVICE_BLOCK_TABLE = 'device_blocks';
 const DEVICE_BLOCK_LOG_TABLE = 'device_block_logs';
 
@@ -89,6 +95,64 @@ function toDate(value) {
   }
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function resolveDeviceLogActionFromType(actionType) {
+  const normalized = trimText(actionType, 50);
+  if (!normalized) {
+    return null;
+  }
+  if (
+    [
+      DEVICE_ACTION_TYPES.AUTO_BLOCK,
+      DEVICE_ACTION_TYPES.MANUAL_BLOCK,
+      DEVICE_ACTION_TYPES.MANUAL_PERMANENT_BLOCK,
+    ].includes(normalized)
+  ) {
+    return DEVICE_LOG_ACTIONS.BLOCK;
+  }
+  if (
+    [
+      DEVICE_ACTION_TYPES.MANUAL_UNBLOCK,
+      DEVICE_ACTION_TYPES.MANUAL_REVOKE_PERMANENT_BLOCK,
+    ].includes(normalized)
+  ) {
+    return DEVICE_LOG_ACTIONS.UNBLOCK;
+  }
+  if (normalized === DEVICE_ACTION_TYPES.GARBAGE_ORDER_MARKED) {
+    return DEVICE_LOG_ACTIONS.MARK;
+  }
+  return normalized;
+}
+
+function resolveDeviceLogActionType(payload = {}) {
+  const actionType = trimText(payload.action_type, 50);
+  if (actionType) {
+    return actionType;
+  }
+
+  const action = trimText(payload.action, 50);
+  if (!action) {
+    return DEVICE_ACTION_TYPES.MANUAL_BLOCK;
+  }
+  if (action === DEVICE_LOG_ACTIONS.BLOCK) {
+    return DEVICE_ACTION_TYPES.MANUAL_BLOCK;
+  }
+  if (action === DEVICE_LOG_ACTIONS.UNBLOCK) {
+    return DEVICE_ACTION_TYPES.MANUAL_UNBLOCK;
+  }
+  if (action === DEVICE_LOG_ACTIONS.MARK) {
+    return DEVICE_ACTION_TYPES.GARBAGE_ORDER_MARKED;
+  }
+  return action;
+}
+
+function resolveDeviceLogAction(payload = {}) {
+  const action = trimText(payload.action, 50);
+  if (action) {
+    return action;
+  }
+  return resolveDeviceLogActionFromType(resolveDeviceLogActionType(payload)) || DEVICE_LOG_ACTIONS.BLOCK;
 }
 
 function toDateMs(value) {
@@ -402,12 +466,15 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
   }
 
   const executor = createExecutor(options.conn);
+  const action = resolveDeviceLogAction(payload);
+  const actionType = resolveDeviceLogActionType(payload);
   await executor.execute(
     `INSERT INTO ${DEVICE_BLOCK_LOG_TABLE}
       (
         device_id,
         order_id,
         order_no,
+        action,
         action_type,
         action_scope,
         operator_user_id,
@@ -431,6 +498,7 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
         :device_id,
         :order_id,
         :order_no,
+        :action,
         :action_type,
         :action_scope,
         :operator_user_id,
@@ -453,7 +521,8 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
       device_id: normalized,
       order_id: payload.order_id == null ? null : Number(payload.order_id),
       order_no: trimText(payload.order_no, 64),
-      action_type: trimText(payload.action_type || payload.action, 50),
+      action,
+      action_type: actionType,
       action_scope: trimText(payload.action_scope, 20),
       operator_user_id: payload.operator_user_id == null ? null : Number(payload.operator_user_id),
       operator_username: trimText(payload.operator_username, 64),
@@ -1120,6 +1189,7 @@ async function listDeviceLogs(deviceId, filters = {}) {
       l.fingerprint_hash,
       l.risk_score,
       l.risk_flags,
+      l.action,
       l.action_type,
       l.action_scope,
       l.operator_user_id,
@@ -1156,7 +1226,11 @@ async function listDeviceLogs(deviceId, filters = {}) {
         : null,
       risk_score: Math.max(0, Number(row.risk_score || 0)),
       risk_flags: parseJson(row.risk_flags, []),
-      action_type: trimText(row.action_type, 50),
+      action: trimText(row.action, 50) || resolveDeviceLogActionFromType(row.action_type) || DEVICE_LOG_ACTIONS.BLOCK,
+      action_type: resolveDeviceLogActionType({
+        action: row.action,
+        action_type: row.action_type,
+      }),
       action_scope: trimText(row.action_scope, 20),
       operator_user_id: row.operator_user_id == null ? null : Number(row.operator_user_id),
       operator_username: trimText(row.operator_username, 64),

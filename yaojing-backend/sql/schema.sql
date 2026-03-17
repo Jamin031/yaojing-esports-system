@@ -194,6 +194,7 @@ CREATE TABLE IF NOT EXISTS device_block_logs (
   order_id BIGINT UNSIGNED NULL,
   order_no VARCHAR(64) NULL,
   fingerprint_hash VARCHAR(128) NULL,
+  action VARCHAR(50) NOT NULL,
   action_type VARCHAR(50) NOT NULL,
   action_scope VARCHAR(20) NOT NULL DEFAULT 'manual',
   operator_user_id BIGINT UNSIGNED NULL,
@@ -213,6 +214,7 @@ CREATE TABLE IF NOT EXISTS device_block_logs (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_device_block_logs_device_created (device_id, created_at),
   KEY idx_device_block_logs_action_created (action_type, created_at),
+  KEY idx_device_block_logs_action_base_created (action, created_at),
   KEY idx_device_block_logs_order_created (order_id, created_at),
   KEY idx_device_block_logs_fingerprint_created (fingerprint_hash, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

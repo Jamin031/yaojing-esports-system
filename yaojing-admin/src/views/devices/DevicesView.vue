@@ -207,7 +207,7 @@
                 <template #default="{ row }">{{ formatMinute(row.created_at) }}</template>
               </el-table-column>
               <el-table-column label="操作类型" min-width="140">
-                <template #default="{ row }">{{ logActionText(row.action_type) }}</template>
+                <template #default="{ row }">{{ logActionText(row.action_type || row.action) }}</template>
               </el-table-column>
               <el-table-column label="关联订单" min-width="160">
                 <template #default="{ row }">{{ row.order_no || (row.order_id ? `#${row.order_id}` : '-') }}</template>
@@ -318,6 +318,9 @@ const durationOptions = [
 ];
 
 const ACTION_TEXT_MAP = {
+  block: '封禁',
+  unblock: '解封',
+  mark: '标记',
   auto_block: '自动封禁',
   manual_block: '手动拉黑',
   manual_permanent_block: '永久拉黑',

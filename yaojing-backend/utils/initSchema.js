@@ -133,6 +133,21 @@ async function constraintExists(tableName, constraintName) {
   return Number(rows[0]?.total || 0) > 0;
 }
 
+async function indexExists(tableName, indexName) {
+  const rows = await query(
+    `SELECT COUNT(*) AS total
+     FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = :table_name
+       AND index_name = :index_name`,
+    {
+      table_name: tableName,
+      index_name: indexName,
+    }
+  );
+  return Number(rows[0]?.total || 0) > 0;
+}
+
 async function ensureStoresTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS stores (
@@ -482,6 +497,7 @@ async function ensureDeviceBlockTables() {
       order_id BIGINT UNSIGNED NULL,
       order_no VARCHAR(64) NULL,
       fingerprint_hash VARCHAR(128) NULL,
+      action VARCHAR(50) NOT NULL,
       action_type VARCHAR(50) NOT NULL,
       action_scope VARCHAR(20) NOT NULL DEFAULT 'manual',
       operator_user_id BIGINT UNSIGNED NULL,
@@ -501,17 +517,21 @@ async function ensureDeviceBlockTables() {
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       KEY idx_device_block_logs_device_created (device_id, created_at),
       KEY idx_device_block_logs_action_created (action_type, created_at),
+      KEY idx_device_block_logs_action_base_created (action, created_at),
       KEY idx_device_block_logs_order_created (order_id, created_at),
       KEY idx_device_block_logs_fingerprint_created (fingerprint_hash, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  const hasDeviceBlockLogAction = await columnExists('device_block_logs', 'action');
   const hasDeviceBlockLogActionType = await columnExists('device_block_logs', 'action_type');
-  const hasDeviceBlockLogLegacyAction = await columnExists('device_block_logs', 'action');
+  if (!hasDeviceBlockLogAction) {
+    await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN action VARCHAR(50) NULL`);
+  }
   if (!hasDeviceBlockLogActionType) {
     await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN action_type VARCHAR(50) NULL`);
   }
-  if (hasDeviceBlockLogLegacyAction) {
+  if (hasDeviceBlockLogAction) {
     await safeQuery(`
       UPDATE device_block_logs
       SET action_type = action
@@ -520,7 +540,33 @@ async function ensureDeviceBlockTables() {
         AND action <> ''
     `);
   }
+  await safeQuery(`
+    UPDATE device_block_logs
+    SET action = CASE
+      WHEN action_type IN ('manual_unblock', 'manual_revoke_permanent_block') THEN 'unblock'
+      WHEN action_type = 'garbage_order_marked' THEN 'mark'
+      WHEN action_type IS NOT NULL AND action_type <> '' THEN 'block'
+      ELSE action
+    END
+    WHERE (action IS NULL OR action = '')
+      AND action_type IS NOT NULL
+      AND action_type <> ''
+  `);
+  await safeQuery(`
+    UPDATE device_block_logs
+    SET action_type = CASE
+      WHEN action = 'block' THEN 'manual_block'
+      WHEN action = 'unblock' THEN 'manual_unblock'
+      WHEN action = 'mark' THEN 'garbage_order_marked'
+      ELSE action
+    END
+    WHERE (action_type IS NULL OR action_type = '')
+      AND action IS NOT NULL
+      AND action <> ''
+  `);
+  await safeQuery(`UPDATE device_block_logs SET action = 'block' WHERE action IS NULL OR action = ''`);
   await safeQuery(`UPDATE device_block_logs SET action_type = 'manual_block' WHERE action_type IS NULL OR action_type = ''`);
+  await safeQuery(`ALTER TABLE device_block_logs MODIFY COLUMN action VARCHAR(50) NOT NULL`);
   await safeQuery(`ALTER TABLE device_block_logs MODIFY COLUMN action_type VARCHAR(50) NOT NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN order_id BIGINT UNSIGNED NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN order_no VARCHAR(64) NULL`);
@@ -540,7 +586,12 @@ async function ensureDeviceBlockTables() {
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN before_status_json JSON NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN after_status_json JSON NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN metadata_json JSON NULL`);
-  await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_action_created (action_type, created_at)`);
+  if (!(await indexExists('device_block_logs', 'idx_device_block_logs_action_created'))) {
+    await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_action_created (action_type, created_at)`);
+  }
+  if (!(await indexExists('device_block_logs', 'idx_device_block_logs_action_base_created'))) {
+    await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_action_base_created (action, created_at)`);
+  }
   await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_order_created (order_id, created_at)`);
   await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_fingerprint_created (fingerprint_hash, created_at)`);
 }
