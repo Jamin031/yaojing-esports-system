@@ -16,11 +16,15 @@ export function createOrderApi(data) {
   });
 }
 
-export function updateOrderStatusApi(orderId, status) {
+export function updateOrderStatusApi(orderId, payload) {
+  const data =
+    payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? payload
+      : { status: payload };
   return request({
     url: `/api/orders/${orderId}/status`,
     method: 'patch',
-    data: { status },
+    data,
   });
 }
 

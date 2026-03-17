@@ -21,31 +21,54 @@ const {
   notifyOrderFinished,
   revokeFinishedNotification,
 } = require('../services/notificationService');
-const { emitNewOrderCreated } = require('../services/adminRealtimeService');
+const {
+  emitDeviceRiskUpdated,
+  emitNewOrderCreated,
+  emitOrderRiskUpdated,
+} = require('../services/adminRealtimeService');
 const {
   BLOCKED_DEVICE_MESSAGE,
   DEVICE_ID_REQUIRED_MESSAGE,
   INVALID_CONTACT_MESSAGE,
+  blockDeviceFor5Minutes,
   clearOrExpireDeviceBlock,
   evaluateContact,
   getRequestDeviceId,
+  getRequestFingerprintHash,
   handleInvalidContactAttempt,
   recordBlockedAttempt,
   recordMissingDeviceId,
 } = require('../services/antiFraudService');
-const { recordDeviceOrderActivity } = require('../services/deviceRiskService');
+const {
+  blockDevice,
+  recordDeviceOrderActivity,
+  recordGarbageOrderHandling,
+} = require('../services/deviceRiskService');
+const {
+  RISK_RULES,
+  applyOrderRiskSnapshot,
+  evaluateOrderRisk,
+  mergeRiskSnapshot,
+  recordDeviceRiskEvent,
+  recordRiskSnapshotEvents,
+  upsertDeviceRiskSnapshot,
+} = require('../services/riskControlService');
+const { isValidDeviceId, normalizeDeviceId } = require('../../shared/deviceId');
 
 const DEFAULT_PLATFORM_RATE = Number(process.env.DEFAULT_PLATFORM_RATE || 0.05);
-const ORDER_STATUSES = ['pending_contact', 'processing', 'problem', 'completed', 'cancelled'];
+const ORDER_STATUSES = ['pending_contact', 'processing', 'problem', 'garbage', 'completed', 'cancelled'];
 const STORE_OWNER_VISIBLE_STATUSES = ['problem', 'completed'];
 const ORDER_ACCESS_ROLES = Object.freeze(['super_admin', 'admin', 'customer_service', 'finance', 'store_owner']);
 const ANONYMOUS_IDENTITY_VISIBLE_ROLES = Object.freeze(['super_admin', 'admin', 'finance', 'customer_service']);
 const ANONYMOUS_IDENTITY_VISIBLE_ROLE_SET = new Set(ANONYMOUS_IDENTITY_VISIBLE_ROLES);
+const DEVICE_BLOCK_PERMISSION = 'api.device_management.block';
+const GARBAGE_DEVICE_BLOCK_MINUTES = new Set([3, 5, 10, 30, 60, 1440]);
 const LEGACY_STATUS_MAP = {
   pending: 'pending_contact',
   confirmed: 'completed',
 };
 const TRUTHY_SET = new Set(['1', 'true', 'yes', 'y', 'on']);
+const FALSY_SET = new Set(['0', 'false', 'no', 'n', 'off']);
 const ORDER_REMARK_INPUT_KEYS = Object.freeze([
   'order_remark',
   'customer_order_remark',
@@ -117,6 +140,34 @@ function normalizeNullableString(value) {
   return text || null;
 }
 
+function parseJsonArray(value) {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (typeof value === 'object') {
+    return Object.values(value)
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parseJsonArray(parsed);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeRiskLevel(value) {
+  const level = String(value || '').trim().toLowerCase();
+  if (['low', 'medium', 'high', 'critical'].includes(level)) {
+    return level;
+  }
+  return 'low';
+}
+
 function getRequestSourceDomain(req) {
   return firstNonEmptyText(req.headers?.['x-forwarded-host'], req.headers?.host, req.hostname);
 }
@@ -136,6 +187,30 @@ function normalizeAnonymousFlag(value) {
     return 0;
   }
   return TRUTHY_SET.has(text) ? 1 : 0;
+}
+
+function parseBooleanFlag(value, fallback = false) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (value == null) {
+    return fallback;
+  }
+  if (typeof value === 'number') {
+    return Number(value) !== 0;
+  }
+
+  const text = String(value).trim().toLowerCase();
+  if (!text) {
+    return fallback;
+  }
+  if (TRUTHY_SET.has(text)) {
+    return true;
+  }
+  if (FALSY_SET.has(text)) {
+    return false;
+  }
+  return fallback;
 }
 
 function makeOrderNo(prefix = 'WB') {
@@ -244,9 +319,13 @@ function canOperateOrders(user) {
 function canManageOrderFlow(user) {
   return (
     canOperateOrders(user) &&
-    hasAnyRole(user, ['super_admin', 'admin']) &&
+    hasAnyRole(user, ['super_admin', 'admin', 'customer_service']) &&
     hasButtonPermission(user, 'orders:change_status')
   );
+}
+
+function canLinkGarbageOrderDeviceBlock(user) {
+  return canManageOrderFlow(user) && hasButtonPermission(user, DEVICE_BLOCK_PERMISSION);
 }
 
 function canEditProblem(user) {
@@ -339,6 +418,79 @@ function pickIncomingOrderRemark(body = {}, fallbackValue = null) {
   return normalizeNullableString(raw);
 }
 
+function pickGarbageOrderReason(body = {}) {
+  return normalizeNullableString(
+    body.reason ??
+      body.garbage_reason ??
+      body.abnormal_reason ??
+      body.handle_reason ??
+      body.device_reason
+  );
+}
+
+function pickGarbageOrderRemark(body = {}) {
+  return normalizeNullableString(
+    body.remark ??
+      body.note ??
+      body.memo ??
+      body.garbage_remark ??
+      body.handle_remark ??
+      body.device_remark
+  );
+}
+
+function resolveGarbageDeviceBlockOptions(body = {}) {
+  const shouldBlock = parseBooleanFlag(
+    body.block_device ??
+      body.sync_block_device ??
+      body.link_block_device ??
+      body.sync_device_block ??
+      body.blockDevice,
+    false
+  );
+
+  if (!shouldBlock) {
+    return {
+      shouldBlock: false,
+      isPermanent: false,
+      durationMinutes: null,
+    };
+  }
+
+  const rawDuration =
+    body.duration_minutes ??
+    body.block_duration_minutes ??
+    body.block_minutes ??
+    body.block_duration ??
+    body.duration;
+  const isPermanent =
+    parseBooleanFlag(body.is_permanent, false) ||
+    String(rawDuration || '')
+      .trim()
+      .toLowerCase() === 'permanent';
+
+  if (isPermanent) {
+    return {
+      shouldBlock: true,
+      isPermanent: true,
+      durationMinutes: null,
+    };
+  }
+
+  const durationMinutes = Number(rawDuration);
+  if (!GARBAGE_DEVICE_BLOCK_MINUTES.has(durationMinutes)) {
+    return {
+      error: '设备拉黑时长仅支持 3 分钟、5 分钟、10 分钟、30 分钟、1 小时、24 小时或永久拉黑',
+    };
+  }
+
+  return {
+    shouldBlock: true,
+    isPermanent: false,
+    durationMinutes,
+  };
+}
+
 function pickExplicitOrderRemark(body = {}, fallbackValue = null) {
   const raw = pickBodyValueByKeys(body, EXPLICIT_ORDER_REMARK_INPUT_KEYS);
   if (typeof raw === 'undefined') {
@@ -377,6 +529,7 @@ function normalizeOrderRow(order) {
   const customerNickname = normalizeNullableString(order.customer_nickname ?? order.nickname ?? order.customer_name);
   const orderRemark = normalizeNullableString(order.order_remark ?? order.customer_order_remark);
   const problemRemark = normalizeNullableString(order.problem_remark ?? order.problem_reason);
+  const riskFlags = parseJsonArray(order.risk_flags);
 
   return {
     ...order,
@@ -390,6 +543,13 @@ function normalizeOrderRow(order) {
     note: orderRemark,
     problem_order_remark: problemRemark,
     problem_remark: problemRemark,
+    fingerprint_hash: normalizeNullableString(order.fingerprint_hash),
+    risk_score: Math.max(0, Number(order.risk_score || 0)),
+    risk_level: normalizeRiskLevel(order.risk_level),
+    risk_flags: riskFlags,
+    is_junk_order: Number(order.is_junk_order || 0) ? 1 : 0,
+    junk_reason: normalizeNullableString(order.junk_reason),
+    review_status: normalizeNullableString(order.review_status) || 'normal',
     is_anonymous: normalizeAnonymousFlag(order.is_anonymous),
     settlement_amount: settlementAmountFromOrder(order),
     amount: settlementAmountFromOrder(order),
@@ -407,6 +567,15 @@ function toOrderListView(row) {
     store_id: row.store_id,
     store_name: row.store_name,
     store_key: row.store_key,
+    device_id: row.device_id,
+    source: row.source,
+    fingerprint_hash: row.fingerprint_hash,
+    risk_score: row.risk_score,
+    risk_level: row.risk_level,
+    risk_flags: row.risk_flags,
+    is_junk_order: row.is_junk_order,
+    junk_reason: row.junk_reason,
+    review_status: row.review_status,
     order_amount: row.order_amount,
     revised_amount: row.revised_amount,
     settlement_amount: row.settlement_amount,
@@ -621,6 +790,15 @@ async function fetchOrderById(id) {
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS contact,
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS customer_contact,
       o.customer_nickname,
+      o.device_id,
+      o.source,
+      o.fingerprint_hash,
+      o.risk_score,
+      o.risk_level,
+      o.risk_flags,
+      o.is_junk_order,
+      o.junk_reason,
+      o.review_status,
       o.order_info,
       o.order_remark,
       o.order_amount,
@@ -824,6 +1002,9 @@ function normalizeOrderPayload(body = {}) {
     store_id: body.store_id,
     contact: normalizeNullableString(contact),
     customer_nickname: pickIncomingCustomerNickname(body, null),
+    fingerprint_hash: normalizeNullableString(body.fingerprint_hash ?? body.fingerprintHash),
+    fingerprint_status: normalizeNullableString(body.fingerprint_status ?? body.fingerprintStatus),
+    fingerprint_error: normalizeNullableString(body.fingerprint_error ?? body.fingerprintError),
     order_info: String(orderInfo || '').trim(),
     order_amount: Number(body.order_amount),
     status: normalizeStatus(body.status || 'pending_contact'),
@@ -845,6 +1026,8 @@ async function listOrders(req, res) {
     play_shop_id,
     play_store_id,
     order_no,
+    risk_level,
+    is_junk_order,
     start_time,
     end_time,
     include_deleted,
@@ -956,6 +1139,17 @@ async function listOrders(req, res) {
     params.status = normalized;
   }
 
+  if (risk_level) {
+    const normalizedRiskLevel = normalizeRiskLevel(risk_level);
+    filters.push('o.risk_level = :risk_level');
+    params.risk_level = normalizedRiskLevel;
+  }
+
+  if (typeof is_junk_order !== 'undefined' && String(is_junk_order).trim() !== '') {
+    filters.push('o.is_junk_order = :is_junk_order');
+    params.is_junk_order = parseBooleanFlag(is_junk_order, false) ? 1 : 0;
+  }
+
   if (keywordText) {
     filters.push(`(
       o.order_no LIKE :keyword
@@ -963,6 +1157,8 @@ async function listOrders(req, res) {
       OR o.customer_nickname LIKE :keyword
       OR o.order_info LIKE :keyword
       OR o.order_remark LIKE :keyword
+      OR o.device_id LIKE :keyword
+      OR o.fingerprint_hash LIKE :keyword
       OR s.name LIKE :keyword
       OR p.name LIKE :keyword
     )`);
@@ -1019,6 +1215,15 @@ async function listOrders(req, res) {
       o.store_id,
       s.name AS store_name,
       s.store_key,
+      o.device_id,
+      o.source,
+      o.fingerprint_hash,
+      o.risk_score,
+      o.risk_level,
+      o.risk_flags,
+      o.is_junk_order,
+      o.junk_reason,
+      o.review_status,
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS contact,
       COALESCE(NULLIF(o.contact, ''), o.customer_contact) AS customer_contact,
       o.customer_nickname,
@@ -1132,11 +1337,18 @@ async function createOrder(req, res) {
   });
 
   const requestDevice = getRequestDeviceId(req);
+  const requestFingerprint = getRequestFingerprintHash(req);
+  const fingerprintHash = requestFingerprint.isValid
+    ? requestFingerprint.fingerprintHash
+    : normalizeNullableString(payload.fingerprint_hash);
   const riskContext = {
     browser: req.headers?.['user-agent'] || '',
     contact_value: payload.contact,
     customer_nickname: payload.customer_nickname,
     device_id: requestDevice.deviceId || null,
+    fingerprint_hash: fingerprintHash,
+    fingerprint_status: payload.fingerprint_status || (requestFingerprint.isValid ? 'ready' : 'missing'),
+    fingerprint_error: payload.fingerprint_error,
     ip: clientIp,
     is_anonymous: payload.is_anonymous,
     runtime_mode: requestStoreLocator.runtimeMode || null,
@@ -1278,6 +1490,70 @@ async function createOrder(req, res) {
     return fail(res, resolvedStore.error || STORE_SOURCE_NOT_FOUND_MESSAGE, 400);
   }
   const store = resolvedStore.store;
+  const resolvedSource = requestStoreLocator.storeKey || store.store_key || sourceDomain || null;
+  const resolvedStoreKey = requestStoreLocator.storeKey || store.store_key || null;
+  const orderRiskSnapshot = await evaluateOrderRisk({
+    ...riskContext,
+    source: resolvedSource,
+    store_key: resolvedStoreKey,
+  });
+
+  if (orderRiskSnapshot.direct_block) {
+    await upsertDeviceRiskSnapshot(requestDevice.deviceId, {
+      source: resolvedSource,
+      source_store_key: resolvedStoreKey,
+      fingerprint_hash: orderRiskSnapshot.fingerprint_hash,
+      risk_score: orderRiskSnapshot.risk_score,
+      risk_level: orderRiskSnapshot.risk_level,
+      risk_flags: orderRiskSnapshot.risk_flags,
+      contact_value: payload.contact,
+      last_abnormal_at: new Date(),
+      last_abnormal_reason: 'fingerprint matched blocked device',
+    });
+
+    await recordRiskSnapshotEvents(orderRiskSnapshot, {
+      ...riskContext,
+      source: resolvedSource,
+      store_key: resolvedStoreKey,
+    });
+
+    await blockDeviceFor5Minutes(requestDevice.deviceId, {
+      ...riskContext,
+      source: resolvedSource,
+      store_key: resolvedStoreKey,
+      fingerprint_hash: orderRiskSnapshot.fingerprint_hash,
+      risk_score: orderRiskSnapshot.risk_score,
+      risk_flags: orderRiskSnapshot.risk_flags,
+      reason: 'fingerprint matched blocked device',
+      metadata: {
+        rule: 'fingerprint_manual_block_match',
+        matched_device_id: orderRiskSnapshot.direct_block?.matched_device_id || null,
+        matched_order_no: orderRiskSnapshot.direct_block?.matched_order_no || null,
+      },
+    });
+
+    await writeOperationLog(req, {
+      action: 'orders.device_risk_block',
+      detail: `Rejected order submit because fingerprint matched blocked device ${orderRiskSnapshot.direct_block?.matched_device_id || ''}`.trim(),
+      target_type: 'order_fraud',
+      target_id: requestDevice.deviceId,
+      after: {
+        device_id: requestDevice.deviceId,
+        fingerprint_hash: orderRiskSnapshot.fingerprint_hash,
+        matched_device_id: orderRiskSnapshot.direct_block?.matched_device_id || null,
+        matched_order_no: orderRiskSnapshot.direct_block?.matched_order_no || null,
+        risk_score: orderRiskSnapshot.risk_score,
+        risk_level: orderRiskSnapshot.risk_level,
+        risk_flags: orderRiskSnapshot.risk_flags,
+      },
+    });
+
+    return fail(res, BLOCKED_DEVICE_MESSAGE, 429, {
+      error_code: 'ORDER_DEVICE_BLOCKED',
+      block_reason: 'fingerprint_manual_block_match',
+      matched_device_id: orderRiskSnapshot.direct_block?.matched_device_id || null,
+    });
+  }
 
   const platformRate = Number.isFinite(Number(req.body?.platform_rate)) ? Number(req.body.platform_rate) : DEFAULT_PLATFORM_RATE;
 
@@ -1287,6 +1563,7 @@ async function createOrder(req, res) {
   const amountForShare = status === 'completed' ? settlementAmount(payload.order_amount, payload.revised_amount) : payload.order_amount;
   const shares = buildShares(amountForShare, storeRate, platformRate, playShopRate);
   const isOnlineSource = isOnlineStore(store);
+  const orderNo = makeOrderNo(isOnlineSource ? 'ONL' : 'WB');
 
   let insertedId = 0;
   await transaction(async (conn) => {
@@ -1300,6 +1577,13 @@ async function createOrder(req, res) {
         customer_nickname,
         device_id,
         source,
+        fingerprint_hash,
+        risk_score,
+        risk_level,
+        risk_flags,
+        is_junk_order,
+        junk_reason,
+        review_status,
         order_info,
         order_amount,
         status,
@@ -1325,15 +1609,22 @@ async function createOrder(req, res) {
         created_by
       )
       VALUES
-      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        makeOrderNo(isOnlineSource ? 'ONL' : 'WB'),
+        orderNo,
         Number(store.id),
         payload.contact,
         payload.contact,
         payload.customer_nickname,
         requestDevice.deviceId,
-        requestStoreLocator.storeKey || store.store_key || sourceDomain || null,
+        resolvedSource,
+        orderRiskSnapshot.fingerprint_hash,
+        orderRiskSnapshot.risk_score,
+        orderRiskSnapshot.risk_level,
+        JSON.stringify(orderRiskSnapshot.risk_flags || []),
+        0,
+        null,
+        orderRiskSnapshot.review_status,
         payload.order_info,
         payload.order_amount,
         status,
@@ -1382,13 +1673,51 @@ async function createOrder(req, res) {
       source_order_time: new Date(),
     });
 
+    await applyOrderRiskSnapshot(insertedId, orderRiskSnapshot, { conn });
+    await upsertDeviceRiskSnapshot(
+      requestDevice.deviceId,
+      {
+        source: resolvedSource,
+        source_store_key: resolvedStoreKey,
+        fingerprint_hash: orderRiskSnapshot.fingerprint_hash,
+        risk_score: orderRiskSnapshot.risk_score,
+        risk_level: orderRiskSnapshot.risk_level,
+        risk_flags: orderRiskSnapshot.risk_flags,
+        contact_value: payload.contact,
+        order_id: insertedId,
+        order_no: orderNo,
+        last_order_at: new Date(),
+        last_abnormal_at: orderRiskSnapshot.risk_score >= 20 ? new Date() : null,
+        last_abnormal_reason:
+          orderRiskSnapshot.risk_flags?.length > 0 ? orderRiskSnapshot.risk_flags.join(', ') : null,
+      },
+      { conn }
+    );
+    await recordRiskSnapshotEvents(
+      orderRiskSnapshot,
+      {
+        ...riskContext,
+        source: resolvedSource,
+        store_key: resolvedStoreKey,
+        order_id: insertedId,
+        order_no: orderNo,
+      },
+      { conn }
+    );
+
     await recordDeviceOrderActivity(
       requestDevice.deviceId,
       {
         order_id: insertedId,
+        order_no: orderNo,
         last_order_at: new Date(),
-        source: requestStoreLocator.storeKey || store.store_key || sourceDomain || null,
-        source_store_key: store.store_key || requestStoreLocator.storeKey || null,
+        source: resolvedSource,
+        source_store_key: resolvedStoreKey,
+        fingerprint_hash: orderRiskSnapshot.fingerprint_hash,
+        risk_score: orderRiskSnapshot.risk_score,
+        risk_level: orderRiskSnapshot.risk_level,
+        risk_flags: orderRiskSnapshot.risk_flags,
+        contact_value: payload.contact,
       },
       { conn }
     );
@@ -1408,6 +1737,16 @@ async function createOrder(req, res) {
   emitNewOrderCreated(req.app?.get('io'), {
     order: row,
     source: notificationSource,
+  });
+  emitOrderRiskUpdated(req.app?.get('io'), {
+    order: row,
+  });
+  emitDeviceRiskUpdated(req.app?.get('io'), {
+    device_id: row?.device_id || requestDevice.deviceId,
+    source: row?.source || resolvedSource,
+    risk_score: row?.risk_score || orderRiskSnapshot.risk_score,
+    risk_level: row?.risk_level || orderRiskSnapshot.risk_level,
+    status: 'normal',
   });
 
   void notifyNewOrder({
@@ -1445,10 +1784,55 @@ async function updateOrderStatus(req, res) {
   const incomingRevised = parseIncomingRevisedAmount(req.body || {}, target.revised_amount);
   const incomingProblemRemark = pickIncomingProblemRemark(req.body || {}, target.problem_remark);
   const incomingOrderRemark = pickExplicitOrderRemark(req.body || {}, target.order_remark);
+  const garbageReason = pickGarbageOrderReason(req.body || {}) || '垃圾订单';
+  const garbageRemark = pickGarbageOrderRemark(req.body || {});
+  const garbageBlock = targetStatus === 'garbage' ? resolveGarbageDeviceBlockOptions(req.body || {}) : null;
+  if (garbageBlock?.error) {
+    return fail(res, garbageBlock.error, 400);
+  }
+  if (targetStatus === 'garbage' && garbageBlock?.shouldBlock && !canLinkGarbageOrderDeviceBlock(req.user)) {
+    return fail(res, '无权限联动设备拉黑', 403);
+  }
   const hasAnonymousFlag = hasOwn(req.body, 'is_anonymous') || hasOwn(req.body, 'anonymous');
   const incomingAnonymous = hasAnonymousFlag
     ? normalizeAnonymousFlag(req.body?.is_anonymous ?? req.body?.anonymous)
     : normalizeAnonymousFlag(target.is_anonymous);
+  const normalizedGarbageDeviceId = normalizeDeviceId(target.device_id);
+  const deviceLinkResult = {
+    status: targetStatus === 'garbage' ? 'pending' : 'not_applicable',
+    has_device_id: isValidDeviceId(normalizedGarbageDeviceId),
+    device_id: isValidDeviceId(normalizedGarbageDeviceId) ? normalizedGarbageDeviceId : null,
+    linked: false,
+    blocked: false,
+    is_permanent: false,
+    duration_minutes: null,
+    warning: null,
+  };
+  const currentRiskSnapshot = {
+    fingerprint_hash: target.fingerprint_hash,
+    risk_score: Number(target.risk_score || 0),
+    risk_level: normalizeRiskLevel(target.risk_level),
+    risk_flags: parseJsonArray(target.risk_flags),
+    is_junk_order: Number(target.is_junk_order || 0),
+    junk_reason: target.junk_reason,
+    review_status: target.review_status,
+  };
+  const nextRiskSnapshot =
+    targetStatus === 'garbage'
+      ? mergeRiskSnapshot(currentRiskSnapshot, {
+          fingerprint_hash: target.fingerprint_hash,
+          risk_score: RISK_RULES.garbage_order,
+          risk_flags: ['garbage_order'],
+          is_junk_order: 1,
+          junk_reason: garbageReason,
+        })
+      : {
+          ...currentRiskSnapshot,
+          is_junk_order: 0,
+          junk_reason: null,
+          review_status:
+            currentRiskSnapshot.review_status === 'junk' ? 'normal' : currentRiskSnapshot.review_status || 'normal',
+        };
 
   await transaction(async (conn) => {
     const nextRevised = incomingRevised;
@@ -1463,6 +1847,9 @@ async function updateOrderStatus(req, res) {
          SET status = ?,
              is_effective = 1,
              confirmed_by = ?,
+             is_junk_order = ?,
+             junk_reason = ?,
+             review_status = ?,
              store_share = ?,
              store_commission = ?,
              platform_share = ?,
@@ -1480,6 +1867,9 @@ async function updateOrderStatus(req, res) {
         [
           targetStatus,
           Number(req.user.id),
+          targetStatus === 'garbage' ? 1 : 0,
+          targetStatus === 'garbage' ? garbageReason : null,
+          nextRiskSnapshot.review_status || 'normal',
           shares.store_share,
           shares.store_commission,
           shares.platform_share,
@@ -1504,13 +1894,26 @@ async function updateOrderStatus(req, res) {
        SET status = ?,
            is_effective = 0,
            confirmed_by = NULL,
+           is_junk_order = ?,
+           junk_reason = ?,
+           review_status = ?,
            revised_amount = ?,
            order_remark = ?,
            problem_remark = ?,
            is_anonymous = ?,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [targetStatus, nextRevised, nextOrderRemark, nextProblemRemark, incomingAnonymous, id]
+      [
+        targetStatus,
+        targetStatus === 'garbage' ? 1 : 0,
+        targetStatus === 'garbage' ? garbageReason : null,
+        nextRiskSnapshot.review_status || 'normal',
+        nextRevised,
+        nextOrderRemark,
+        nextProblemRemark,
+        incomingAnonymous,
+        id,
+      ]
     );
 
     if (targetStatus === 'problem') {
@@ -1524,6 +1927,106 @@ async function updateOrderStatus(req, res) {
       );
     } else {
       await resolveProblemOrder(id, req.user?.id, conn);
+    }
+
+    await applyOrderRiskSnapshot(id, nextRiskSnapshot, { conn });
+
+    if (targetStatus !== 'garbage') {
+      deviceLinkResult.status = 'not_applicable';
+      return;
+    }
+
+    if (!isValidDeviceId(normalizedGarbageDeviceId)) {
+      deviceLinkResult.status = 'skipped';
+      deviceLinkResult.warning = '该订单无设备标识，已标记为垃圾订单，但无法联动设备拉黑';
+      return;
+    }
+
+    await recordGarbageOrderHandling(
+      normalizedGarbageDeviceId,
+      {
+        order_id: id,
+        order_no: target.order_no,
+        source: target.source || target.store_key || null,
+        source_store_key: target.store_key || null,
+        order_created_at: target.created_at || new Date(),
+        fingerprint_hash: nextRiskSnapshot.fingerprint_hash,
+        risk_score: nextRiskSnapshot.risk_score,
+        risk_level: nextRiskSnapshot.risk_level,
+        risk_flags: nextRiskSnapshot.risk_flags,
+        contact_value: target.contact,
+        last_abnormal_at: new Date(),
+        last_abnormal_reason: '垃圾订单',
+        reason: garbageReason,
+        remark: garbageRemark,
+        operator: req.user,
+        sync_block_requested: Boolean(garbageBlock?.shouldBlock),
+      },
+      { conn }
+    );
+
+    deviceLinkResult.status = 'linked';
+    deviceLinkResult.linked = true;
+
+    await upsertDeviceRiskSnapshot(
+      normalizedGarbageDeviceId,
+      {
+        source: target.source || target.store_key || null,
+        source_store_key: target.store_key || null,
+        fingerprint_hash: nextRiskSnapshot.fingerprint_hash,
+        risk_score: nextRiskSnapshot.risk_score,
+        risk_level: nextRiskSnapshot.risk_level,
+        risk_flags: nextRiskSnapshot.risk_flags,
+        contact_value: target.contact,
+        order_id: id,
+        order_no: target.order_no,
+        last_order_at: target.created_at || new Date(),
+        last_abnormal_at: new Date(),
+        last_abnormal_reason: garbageReason,
+      },
+      { conn }
+    );
+    await recordRiskSnapshotEvents(
+      nextRiskSnapshot,
+      {
+        device_id: normalizedGarbageDeviceId,
+        fingerprint_hash: nextRiskSnapshot.fingerprint_hash,
+        source: target.source || target.store_key || null,
+        store_key: target.store_key || null,
+        order_id: id,
+        order_no: target.order_no,
+        contact_value: target.contact,
+        customer_name: target.customer_nickname,
+      },
+      { conn }
+    );
+
+    if (garbageBlock?.shouldBlock) {
+      await blockDevice(
+        normalizedGarbageDeviceId,
+        {
+          duration_minutes: garbageBlock.durationMinutes,
+          is_permanent: garbageBlock.isPermanent,
+          reason: garbageReason,
+          remark: garbageRemark,
+          reason_type: 'garbage_order',
+          order_id: id,
+          order_no: target.order_no,
+          source: target.source || target.store_key || null,
+          source_store_key: target.store_key || null,
+          fingerprint_hash: nextRiskSnapshot.fingerprint_hash,
+          risk_score: nextRiskSnapshot.risk_score,
+          risk_level: nextRiskSnapshot.risk_level,
+          risk_flags: nextRiskSnapshot.risk_flags,
+          contact_value: target.contact,
+          operator: req.user,
+        },
+        { conn }
+      );
+
+      deviceLinkResult.blocked = true;
+      deviceLinkResult.is_permanent = Boolean(garbageBlock.isPermanent);
+      deviceLinkResult.duration_minutes = garbageBlock.durationMinutes;
     }
   });
 
@@ -1564,7 +2067,16 @@ async function updateOrderStatus(req, res) {
   const statusAction =
     String(before.status) === 'problem' && targetStatus === 'completed'
       ? 'orders.problem_complete'
-      : 'orders.update_status';
+      : targetStatus === 'garbage'
+        ? 'orders.mark_garbage'
+        : 'orders.update_status';
+  const responseRow =
+    targetStatus === 'garbage'
+      ? {
+          ...row,
+          device_link_result: deviceLinkResult,
+        }
+      : row;
 
   await writeOperationLog(req, {
     action: statusAction,
@@ -1575,10 +2087,28 @@ async function updateOrderStatus(req, res) {
     target_type: 'order',
     target_id: id,
     before,
-    after: row,
+    after: responseRow,
   });
 
-  return ok(res, applyOrderFieldPermissions(req.user, row), '订单状态更新成功');
+  emitOrderRiskUpdated(req.app?.get('io'), {
+    order: row,
+  });
+  if (isValidDeviceId(normalizedGarbageDeviceId)) {
+    emitDeviceRiskUpdated(req.app?.get('io'), {
+      device_id: normalizedGarbageDeviceId,
+      source: row?.source || before.source || null,
+      risk_score: row?.risk_score || nextRiskSnapshot.risk_score || 0,
+      risk_level: row?.risk_level || nextRiskSnapshot.risk_level || 'low',
+      status:
+        targetStatus === 'garbage' && deviceLinkResult.blocked
+          ? deviceLinkResult.is_permanent
+            ? 'permanent'
+            : 'blocked'
+          : 'normal',
+    });
+  }
+
+  return ok(res, applyOrderFieldPermissions(req.user, responseRow), '订单状态更新成功');
 }
 
 async function updateOrderAmount(req, res) {
@@ -2104,6 +2634,9 @@ async function batchUpdateOrderStatus(req, res) {
   }
   if (!ORDER_STATUSES.includes(targetStatus)) {
     return fail(res, '状态参数无效', 400);
+  }
+  if (targetStatus === 'garbage') {
+    return fail(res, '垃圾订单请逐笔处理，以便确认设备联动策略', 400);
   }
 
   const hasBatchOrderRemark =

@@ -1,5 +1,6 @@
 const { query, transaction } = require('../config/db');
 const { normalizeDeviceId, isValidDeviceId } = require('../../shared/deviceId');
+const { normalizeFingerprintHash, isValidFingerprintHash } = require('../../shared/fingerprint');
 
 const DEVICE_BLOCK_TYPES = Object.freeze({
   NONE: 'none',
@@ -19,6 +20,7 @@ const DEVICE_ACTION_TYPES = Object.freeze({
   MANUAL_PERMANENT_BLOCK: 'manual_permanent_block',
   MANUAL_UNBLOCK: 'manual_unblock',
   MANUAL_REVOKE_PERMANENT_BLOCK: 'manual_revoke_permanent_block',
+  GARBAGE_ORDER_MARKED: 'garbage_order_marked',
 });
 
 const DEVICE_BLOCK_TABLE = 'device_blocks';
@@ -132,7 +134,15 @@ function normalizeProfileRow(row) {
     device_id: normalizeDeviceId(row.device_id),
     source: trimText(row.source, 120),
     source_store_key: trimText(row.source_store_key, 80),
+    fingerprint_hash: isValidFingerprintHash(row.fingerprint_hash)
+      ? normalizeFingerprintHash(row.fingerprint_hash)
+      : null,
+    last_risk_score: Math.max(0, Number(row.last_risk_score || 0)),
+    last_risk_level: trimText(row.last_risk_level, 32) || 'low',
+    last_risk_flags: parseJson(row.last_risk_flags, []),
+    last_contact_value: trimText(row.last_contact_value, 128),
     last_order_id: row.last_order_id == null ? null : Number(row.last_order_id),
+    last_order_no: trimText(row.last_order_no, 64),
     last_order_at: row.last_order_at || null,
     last_abnormal_at: row.last_abnormal_at || null,
     last_abnormal_count: Number(row.last_abnormal_count || 0),
@@ -172,7 +182,13 @@ function buildEffectiveDeviceState(row) {
       remark: null,
       source: null,
       source_store_key: null,
+      fingerprint_hash: null,
+      last_risk_score: 0,
+      last_risk_level: 'low',
+      last_risk_flags: [],
+      last_contact_value: null,
       last_order_id: null,
+      last_order_no: null,
       last_order_at: null,
       last_abnormal_at: null,
       last_abnormal_count: 0,
@@ -237,7 +253,13 @@ function buildEffectiveDeviceState(row) {
     remark,
     source: normalized.source,
     source_store_key: normalized.source_store_key,
+    fingerprint_hash: normalized.fingerprint_hash,
+    last_risk_score: normalized.last_risk_score,
+    last_risk_level: normalized.last_risk_level,
+    last_risk_flags: Array.isArray(normalized.last_risk_flags) ? normalized.last_risk_flags : [],
+    last_contact_value: normalized.last_contact_value,
     last_order_id: normalized.last_order_id,
+    last_order_no: normalized.last_order_no,
     last_order_at: normalized.last_order_at,
     last_abnormal_at: normalized.last_abnormal_at,
     last_abnormal_count: normalized.last_abnormal_count,
@@ -277,31 +299,38 @@ async function getDeviceProfileRow(deviceId, options = {}) {
   const executor = createExecutor(options.conn);
   const rows = await executor.select(
     `SELECT
-      device_id,
-      source,
-      source_store_key,
-      last_order_id,
-      last_order_at,
-      last_abnormal_at,
-      last_abnormal_count,
-      last_abnormal_reason,
-      manual_block_started_at,
-      manual_block_expires_at,
-      manual_is_permanent,
-      manual_block_reason,
-      manual_block_remark,
-      auto_block_started_at,
-      auto_block_expires_at,
-      auto_block_reason,
-      last_operator_user_id,
-      last_operator_username,
-      last_operator_name,
-      last_operation_type,
-      last_operation_at,
-      created_at,
-      updated_at
-     FROM ${DEVICE_BLOCK_TABLE}
-     WHERE device_id = :device_id
+      p.device_id,
+      p.source,
+      p.source_store_key,
+      p.fingerprint_hash,
+      p.last_risk_score,
+      p.last_risk_level,
+      p.last_risk_flags,
+      p.last_contact_value,
+      p.last_order_id,
+      COALESCE(p.last_order_no, o.order_no) AS last_order_no,
+      p.last_order_at,
+      p.last_abnormal_at,
+      p.last_abnormal_count,
+      p.last_abnormal_reason,
+      p.manual_block_started_at,
+      p.manual_block_expires_at,
+      p.manual_is_permanent,
+      p.manual_block_reason,
+      p.manual_block_remark,
+      p.auto_block_started_at,
+      p.auto_block_expires_at,
+      p.auto_block_reason,
+      p.last_operator_user_id,
+      p.last_operator_username,
+      p.last_operator_name,
+      p.last_operation_type,
+      p.last_operation_at,
+      p.created_at,
+      p.updated_at
+     FROM ${DEVICE_BLOCK_TABLE} p
+     LEFT JOIN orders o ON o.id = p.last_order_id
+     WHERE p.device_id = :device_id
      LIMIT 1`,
     {
       device_id: normalized,
@@ -335,6 +364,9 @@ async function upsertDeviceProfileBase(deviceId, context = {}, options = {}) {
     device_id: normalized,
     source: trimText(context.source, 120),
     source_store_key: trimText(context.source_store_key || context.store_key, 80),
+    fingerprint_hash: isValidFingerprintHash(context.fingerprint_hash)
+      ? normalizeFingerprintHash(context.fingerprint_hash)
+      : null,
   };
 
   await executor.execute(
@@ -342,17 +374,20 @@ async function upsertDeviceProfileBase(deviceId, context = {}, options = {}) {
       (
         device_id,
         source,
-        source_store_key
+        source_store_key,
+        fingerprint_hash
       )
      VALUES
       (
         :device_id,
         :source,
-        :source_store_key
+        :source_store_key,
+        :fingerprint_hash
       )
      ON DUPLICATE KEY UPDATE
       source = COALESCE(VALUES(source), source),
       source_store_key = COALESCE(VALUES(source_store_key), source_store_key),
+      fingerprint_hash = COALESCE(VALUES(fingerprint_hash), fingerprint_hash),
       updated_at = CURRENT_TIMESTAMP`,
     params
   );
@@ -371,13 +406,19 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
     `INSERT INTO ${DEVICE_BLOCK_LOG_TABLE}
       (
         device_id,
+        order_id,
+        order_no,
         action_type,
         action_scope,
         operator_user_id,
         operator_username,
         operator_name,
+        fingerprint_hash,
+        risk_score,
+        risk_flags,
         duration_minutes,
         is_permanent,
+        reason_type,
         reason,
         remark,
         source,
@@ -388,13 +429,19 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
      VALUES
       (
         :device_id,
+        :order_id,
+        :order_no,
         :action_type,
         :action_scope,
         :operator_user_id,
         :operator_username,
         :operator_name,
+        :fingerprint_hash,
+        :risk_score,
+        :risk_flags,
         :duration_minutes,
         :is_permanent,
+        :reason_type,
         :reason,
         :remark,
         :source,
@@ -404,16 +451,24 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
       )`,
     {
       device_id: normalized,
+      order_id: payload.order_id == null ? null : Number(payload.order_id),
+      order_no: trimText(payload.order_no, 64),
       action_type: trimText(payload.action_type, 50),
       action_scope: trimText(payload.action_scope, 20),
       operator_user_id: payload.operator_user_id == null ? null : Number(payload.operator_user_id),
       operator_username: trimText(payload.operator_username, 64),
       operator_name: trimText(payload.operator_name, 80),
+      fingerprint_hash: isValidFingerprintHash(payload.fingerprint_hash)
+        ? normalizeFingerprintHash(payload.fingerprint_hash)
+        : null,
+      risk_score: Number.isFinite(Number(payload.risk_score)) ? Math.max(0, Number(payload.risk_score)) : 0,
+      risk_flags: stringifyJson(payload.risk_flags),
       duration_minutes:
         payload.duration_minutes == null || payload.duration_minutes === ''
           ? null
           : Number(payload.duration_minutes),
       is_permanent: payload.is_permanent ? 1 : 0,
+      reason_type: trimText(payload.reason_type, 60),
       reason: trimText(payload.reason, 255),
       remark: trimText(payload.remark, 500),
       source: trimText(payload.source, 120),
@@ -422,6 +477,116 @@ async function writeDeviceRiskLog(deviceId, payload = {}, options = {}) {
       metadata_json: stringifyJson(payload.metadata),
     }
   );
+}
+
+async function recordGarbageOrderHandling(deviceId, context = {}, options = {}) {
+  const normalized = normalizeDeviceId(deviceId);
+  if (!isValidDeviceId(normalized)) {
+    return getDeviceStatus(normalized, options);
+  }
+
+  const operator = buildOperator(context.operator);
+  const actionAt = toDate(context.operation_at || new Date()) || new Date();
+  const reason = trimText(context.reason, 255) || '垃圾订单';
+  const remark = trimText(context.remark, 500);
+
+  const runner = async (conn) => {
+    const beforeStatus = await getDeviceStatus(normalized, { conn });
+    await upsertDeviceProfileBase(normalized, context, { conn });
+
+    const nextAbnormalCount = Math.max(
+      1,
+      Number(context.last_abnormal_count || beforeStatus.last_abnormal_count || 1)
+    );
+
+    const executor = createExecutor(conn);
+    await executor.execute(
+      `UPDATE ${DEVICE_BLOCK_TABLE}
+       SET source = COALESCE(:source, source),
+           source_store_key = COALESCE(:source_store_key, source_store_key),
+           fingerprint_hash = COALESCE(:fingerprint_hash, fingerprint_hash),
+           last_risk_score = GREATEST(COALESCE(last_risk_score, 0), :last_risk_score),
+           last_risk_level = COALESCE(:last_risk_level, last_risk_level),
+           last_risk_flags = COALESCE(:last_risk_flags, last_risk_flags),
+           last_contact_value = COALESCE(:last_contact_value, last_contact_value),
+           last_order_id = COALESCE(:last_order_id, last_order_id),
+           last_order_no = COALESCE(:last_order_no, last_order_no),
+           last_order_at = COALESCE(:last_order_at, last_order_at),
+           last_abnormal_at = :last_abnormal_at,
+           last_abnormal_count = GREATEST(COALESCE(last_abnormal_count, 0), :last_abnormal_count),
+           last_abnormal_reason = COALESCE(:last_abnormal_reason, last_abnormal_reason),
+           last_operator_user_id = :last_operator_user_id,
+           last_operator_username = :last_operator_username,
+           last_operator_name = :last_operator_name,
+           last_operation_type = :last_operation_type,
+           last_operation_at = :last_operation_at,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE device_id = :device_id`,
+      {
+        device_id: normalized,
+        source: trimText(context.source, 120),
+        source_store_key: trimText(context.source_store_key || context.store_key, 80),
+        fingerprint_hash: isValidFingerprintHash(context.fingerprint_hash)
+          ? normalizeFingerprintHash(context.fingerprint_hash)
+          : null,
+        last_risk_score: Math.max(0, Number(context.risk_score || 0)),
+        last_risk_level: trimText(context.risk_level, 32),
+        last_risk_flags: stringifyJson(context.risk_flags),
+        last_contact_value: trimText(context.contact_value, 128),
+        last_order_id: context.order_id == null ? null : Number(context.order_id),
+        last_order_no: trimText(context.order_no, 64),
+        last_order_at: toDate(context.last_order_at || context.order_created_at || actionAt),
+        last_abnormal_at: toDate(context.last_abnormal_at || actionAt),
+        last_abnormal_count: nextAbnormalCount,
+        last_abnormal_reason: trimText(context.last_abnormal_reason || context.reason || '垃圾订单', 255),
+        last_operator_user_id: operator.id,
+        last_operator_username: operator.username,
+        last_operator_name: operator.name,
+        last_operation_type: DEVICE_ACTION_TYPES.GARBAGE_ORDER_MARKED,
+        last_operation_at: actionAt,
+      }
+    );
+
+    const afterStatus = await getDeviceStatus(normalized, { conn });
+    await writeDeviceRiskLog(
+      normalized,
+      {
+        order_id: context.order_id,
+        order_no: context.order_no,
+        action_type: DEVICE_ACTION_TYPES.GARBAGE_ORDER_MARKED,
+        action_scope: 'manual',
+        operator_user_id: operator.id,
+        operator_username: operator.username,
+        operator_name: operator.name,
+        fingerprint_hash: context.fingerprint_hash,
+        risk_score: context.risk_score,
+        risk_flags: context.risk_flags,
+        duration_minutes: null,
+        is_permanent: false,
+        reason_type: 'garbage_order',
+        reason,
+        remark,
+        source: context.source,
+        before_status: beforeStatus,
+        after_status: afterStatus,
+        metadata: {
+          order_no: trimText(context.order_no, 40),
+          source_store_key: trimText(context.source_store_key || context.store_key, 80),
+          trigger: 'garbage_order',
+          sync_block_requested: Boolean(context.sync_block_requested),
+        },
+      },
+      { conn }
+    );
+
+    return afterStatus;
+  };
+
+  if (options.conn) {
+    return runner(options.conn);
+  }
+
+  return transaction(runner);
 }
 
 async function recordDeviceOrderActivity(deviceId, context = {}, options = {}) {
@@ -435,7 +600,13 @@ async function recordDeviceOrderActivity(deviceId, context = {}, options = {}) {
     `UPDATE ${DEVICE_BLOCK_TABLE}
      SET source = COALESCE(:source, source),
          source_store_key = COALESCE(:source_store_key, source_store_key),
+         fingerprint_hash = COALESCE(:fingerprint_hash, fingerprint_hash),
+         last_risk_score = GREATEST(COALESCE(last_risk_score, 0), :last_risk_score),
+         last_risk_level = COALESCE(:last_risk_level, last_risk_level),
+         last_risk_flags = COALESCE(:last_risk_flags, last_risk_flags),
+         last_contact_value = COALESCE(:last_contact_value, last_contact_value),
          last_order_id = COALESCE(:last_order_id, last_order_id),
+         last_order_no = COALESCE(:last_order_no, last_order_no),
          last_order_at = COALESCE(:last_order_at, last_order_at),
          updated_at = CURRENT_TIMESTAMP
      WHERE device_id = :device_id`,
@@ -443,7 +614,15 @@ async function recordDeviceOrderActivity(deviceId, context = {}, options = {}) {
       device_id: normalized,
       source: trimText(context.source, 120),
       source_store_key: trimText(context.source_store_key || context.store_key, 80),
+      fingerprint_hash: isValidFingerprintHash(context.fingerprint_hash)
+        ? normalizeFingerprintHash(context.fingerprint_hash)
+        : null,
+      last_risk_score: Math.max(0, Number(context.risk_score || 0)),
+      last_risk_level: trimText(context.risk_level, 32),
+      last_risk_flags: stringifyJson(context.risk_flags),
+      last_contact_value: trimText(context.contact_value, 128),
       last_order_id: context.order_id == null ? null : Number(context.order_id),
+      last_order_no: trimText(context.order_no, 64),
       last_order_at: toDate(context.last_order_at || new Date()),
     }
   );
@@ -462,6 +641,11 @@ async function recordDeviceAbnormalActivity(deviceId, context = {}, options = {}
     `UPDATE ${DEVICE_BLOCK_TABLE}
      SET source = COALESCE(:source, source),
          source_store_key = COALESCE(:source_store_key, source_store_key),
+         fingerprint_hash = COALESCE(:fingerprint_hash, fingerprint_hash),
+         last_risk_score = GREATEST(COALESCE(last_risk_score, 0), :last_risk_score),
+         last_risk_level = COALESCE(:last_risk_level, last_risk_level),
+         last_risk_flags = COALESCE(:last_risk_flags, last_risk_flags),
+         last_contact_value = COALESCE(:last_contact_value, last_contact_value),
          last_abnormal_at = COALESCE(:last_abnormal_at, last_abnormal_at),
          last_abnormal_count = :last_abnormal_count,
          last_abnormal_reason = COALESCE(:last_abnormal_reason, last_abnormal_reason),
@@ -471,6 +655,13 @@ async function recordDeviceAbnormalActivity(deviceId, context = {}, options = {}
       device_id: normalized,
       source: trimText(context.source, 120),
       source_store_key: trimText(context.source_store_key || context.store_key, 80),
+      fingerprint_hash: isValidFingerprintHash(context.fingerprint_hash)
+        ? normalizeFingerprintHash(context.fingerprint_hash)
+        : null,
+      last_risk_score: Math.max(0, Number(context.risk_score || 0)),
+      last_risk_level: trimText(context.risk_level, 32),
+      last_risk_flags: stringifyJson(context.risk_flags),
+      last_contact_value: trimText(context.contact_value, 128),
       last_abnormal_at: toDate(context.last_abnormal_at || new Date()),
       last_abnormal_count: Math.max(0, Number(context.last_abnormal_count || 0)),
       last_abnormal_reason: trimText(context.last_abnormal_reason || context.reason, 255),
@@ -496,6 +687,11 @@ async function applyAutomaticDeviceBlock(deviceId, context = {}, options = {}) {
       `UPDATE ${DEVICE_BLOCK_TABLE}
        SET source = COALESCE(:source, source),
            source_store_key = COALESCE(:source_store_key, source_store_key),
+           fingerprint_hash = COALESCE(:fingerprint_hash, fingerprint_hash),
+           last_risk_score = GREATEST(COALESCE(last_risk_score, 0), :last_risk_score),
+           last_risk_level = COALESCE(:last_risk_level, last_risk_level),
+           last_risk_flags = COALESCE(:last_risk_flags, last_risk_flags),
+           last_contact_value = COALESCE(:last_contact_value, last_contact_value),
            last_abnormal_at = COALESCE(:last_abnormal_at, last_abnormal_at),
            last_abnormal_count = :last_abnormal_count,
            last_abnormal_reason = COALESCE(:last_abnormal_reason, last_abnormal_reason),
@@ -513,6 +709,13 @@ async function applyAutomaticDeviceBlock(deviceId, context = {}, options = {}) {
         device_id: normalized,
         source: trimText(context.source, 120),
         source_store_key: trimText(context.source_store_key || context.store_key, 80),
+        fingerprint_hash: isValidFingerprintHash(context.fingerprint_hash)
+          ? normalizeFingerprintHash(context.fingerprint_hash)
+          : null,
+        last_risk_score: Math.max(0, Number(context.risk_score || 0)),
+        last_risk_level: trimText(context.risk_level, 32),
+        last_risk_flags: stringifyJson(context.risk_flags),
+        last_contact_value: trimText(context.contact_value, 128),
         last_abnormal_at: toDate(context.last_abnormal_at || new Date()),
         last_abnormal_count: Math.max(0, Number(context.last_abnormal_count || 0)),
         last_abnormal_reason: trimText(context.last_abnormal_reason || context.reason, 255),
@@ -536,13 +739,20 @@ async function applyAutomaticDeviceBlock(deviceId, context = {}, options = {}) {
         operator_user_id: operator.id,
         operator_username: operator.username,
         operator_name: operator.name,
+        fingerprint_hash: context.fingerprint_hash,
+        risk_score: context.risk_score,
+        risk_flags: context.risk_flags,
         duration_minutes: Math.max(0, Number(context.duration_minutes || 0)),
         is_permanent: false,
+        order_id: context.order_id,
         reason: context.reason,
         source: context.source,
         before_status: beforeStatus,
         after_status: afterStatus,
         metadata: {
+          order_id: context.order_id == null ? null : Number(context.order_id),
+          order_no: trimText(context.order_no, 40),
+          reason_type: trimText(context.reason_type, 60),
           source_store_key: trimText(context.source_store_key || context.store_key, 80),
           trigger: trimText(context.trigger, 120),
         },
@@ -582,6 +792,11 @@ async function blockDevice(deviceId, context = {}, options = {}) {
       `UPDATE ${DEVICE_BLOCK_TABLE}
        SET source = COALESCE(:source, source),
            source_store_key = COALESCE(:source_store_key, source_store_key),
+           fingerprint_hash = COALESCE(:fingerprint_hash, fingerprint_hash),
+           last_risk_score = GREATEST(COALESCE(last_risk_score, 0), :last_risk_score),
+           last_risk_level = COALESCE(:last_risk_level, last_risk_level),
+           last_risk_flags = COALESCE(:last_risk_flags, last_risk_flags),
+           last_contact_value = COALESCE(:last_contact_value, last_contact_value),
            manual_block_started_at = :manual_block_started_at,
            manual_block_expires_at = :manual_block_expires_at,
            manual_is_permanent = :manual_is_permanent,
@@ -598,6 +813,13 @@ async function blockDevice(deviceId, context = {}, options = {}) {
         device_id: normalized,
         source: trimText(context.source, 120),
         source_store_key: trimText(context.source_store_key || context.store_key, 80),
+        fingerprint_hash: isValidFingerprintHash(context.fingerprint_hash)
+          ? normalizeFingerprintHash(context.fingerprint_hash)
+          : null,
+        last_risk_score: Math.max(0, Number(context.risk_score || 0)),
+        last_risk_level: trimText(context.risk_level, 32),
+        last_risk_flags: stringifyJson(context.risk_flags),
+        last_contact_value: trimText(context.contact_value, 128),
         manual_block_started_at: blockedAt,
         manual_block_expires_at: blockedUntil,
         manual_is_permanent: isPermanent ? 1 : 0,
@@ -620,14 +842,23 @@ async function blockDevice(deviceId, context = {}, options = {}) {
         operator_user_id: operator.id,
         operator_username: operator.username,
         operator_name: operator.name,
+        fingerprint_hash: context.fingerprint_hash,
+        risk_score: context.risk_score,
+        risk_flags: context.risk_flags,
         duration_minutes: durationMinutes,
         is_permanent: isPermanent,
+        order_id: context.order_id,
+        order_no: context.order_no,
+        reason_type: context.reason_type,
         reason: context.reason,
         remark: context.remark,
         source: context.source,
         before_status: beforeStatus,
         after_status: afterStatus,
         metadata: {
+          order_id: context.order_id == null ? null : Number(context.order_id),
+          order_no: trimText(context.order_no, 40),
+          reason_type: trimText(context.reason_type, 60),
           source_store_key: trimText(context.source_store_key || context.store_key, 80),
         },
       },
@@ -701,11 +932,22 @@ async function unblockDevice(deviceId, context = {}, options = {}) {
         operator_user_id: operator.id,
         operator_username: operator.username,
         operator_name: operator.name,
+        fingerprint_hash: context.fingerprint_hash || beforeStatus.fingerprint_hash,
+        risk_score: context.risk_score || beforeStatus.last_risk_score,
+        risk_flags: context.risk_flags || beforeStatus.last_risk_flags,
         duration_minutes: null,
         is_permanent: false,
+        order_id: context.order_id,
+        order_no: context.order_no || beforeStatus.last_order_no,
+        reason_type: context.reason_type,
         reason: context.reason,
         remark: context.remark,
         source: context.source || beforeStatus.source,
+        metadata: {
+          order_id: context.order_id == null ? null : Number(context.order_id),
+          order_no: trimText(context.order_no, 40),
+          reason_type: trimText(context.reason_type, 60),
+        },
         before_status: beforeStatus,
         after_status: afterStatus,
       },
@@ -735,7 +977,9 @@ function buildDeviceListFilters(filters = {}) {
     '(p.auto_block_expires_at IS NOT NULL AND p.auto_block_expires_at > CURRENT_TIMESTAMP)';
 
   if (keyword) {
-    where.push('(p.device_id LIKE :keyword OR COALESCE(p.source, \'\') LIKE :keyword)');
+    where.push(
+      '(p.device_id LIKE :keyword OR COALESCE(p.source, \'\') LIKE :keyword OR COALESCE(p.fingerprint_hash, \'\') LIKE :keyword)'
+    );
     params.keyword = `%${keyword}%`;
   }
 
@@ -781,7 +1025,13 @@ async function listDevices(filters = {}) {
       p.device_id,
       p.source,
       p.source_store_key,
+      p.fingerprint_hash,
+      p.last_risk_score,
+      p.last_risk_level,
+      p.last_risk_flags,
+      p.last_contact_value,
       p.last_order_id,
+      COALESCE(p.last_order_no, o.order_no) AS last_order_no,
       p.last_order_at,
       p.last_abnormal_at,
       p.last_abnormal_count,
@@ -802,6 +1052,7 @@ async function listDevices(filters = {}) {
       p.created_at,
       p.updated_at
      FROM ${DEVICE_BLOCK_TABLE} p
+     LEFT JOIN orders o ON o.id = p.last_order_id
      WHERE ${where}
      ORDER BY
       CASE
@@ -862,25 +1113,32 @@ async function listDeviceLogs(deviceId, filters = {}) {
 
   const rows = await query(
     `SELECT
-      id,
-      device_id,
-      action_type,
-      action_scope,
-      operator_user_id,
-      operator_username,
-      operator_name,
-      duration_minutes,
-      is_permanent,
-      reason,
-      remark,
-      source,
-      before_status_json,
-      after_status_json,
-      metadata_json,
-      created_at
-     FROM ${DEVICE_BLOCK_LOG_TABLE}
-     WHERE device_id = :device_id
-     ORDER BY created_at DESC, id DESC
+      l.id,
+      l.device_id,
+      l.order_id,
+      COALESCE(l.order_no, o.order_no) AS order_no,
+      l.fingerprint_hash,
+      l.risk_score,
+      l.risk_flags,
+      l.action_type,
+      l.action_scope,
+      l.operator_user_id,
+      l.operator_username,
+      l.operator_name,
+      l.duration_minutes,
+      l.is_permanent,
+      l.reason_type,
+      l.reason,
+      l.remark,
+      l.source,
+      l.before_status_json,
+      l.after_status_json,
+      l.metadata_json,
+      l.created_at
+     FROM ${DEVICE_BLOCK_LOG_TABLE} l
+     LEFT JOIN orders o ON o.id = l.order_id
+     WHERE l.device_id = :device_id
+     ORDER BY l.created_at DESC, l.id DESC
      LIMIT ${pageSize} OFFSET ${offset}`,
     {
       device_id: normalized,
@@ -891,6 +1149,13 @@ async function listDeviceLogs(deviceId, filters = {}) {
     list: rows.map((row) => ({
       id: Number(row.id),
       device_id: row.device_id,
+      order_id: row.order_id == null ? null : Number(row.order_id),
+      order_no: trimText(row.order_no, 64),
+      fingerprint_hash: isValidFingerprintHash(row.fingerprint_hash)
+        ? normalizeFingerprintHash(row.fingerprint_hash)
+        : null,
+      risk_score: Math.max(0, Number(row.risk_score || 0)),
+      risk_flags: parseJson(row.risk_flags, []),
       action_type: trimText(row.action_type, 50),
       action_scope: trimText(row.action_scope, 20),
       operator_user_id: row.operator_user_id == null ? null : Number(row.operator_user_id),
@@ -898,6 +1163,7 @@ async function listDeviceLogs(deviceId, filters = {}) {
       operator_name: trimText(row.operator_name, 80),
       duration_minutes: row.duration_minutes == null ? null : Number(row.duration_minutes),
       is_permanent: Number(row.is_permanent || 0) === 1,
+      reason_type: trimText(row.reason_type, 60),
       reason: trimText(row.reason, 255),
       remark: trimText(row.remark, 500),
       source: trimText(row.source, 120),
@@ -936,6 +1202,7 @@ module.exports = {
   listDeviceLogs,
   listDeviceSources,
   listDevices,
+  recordGarbageOrderHandling,
   recordDeviceAbnormalActivity,
   recordDeviceOrderActivity,
   unblockDevice,

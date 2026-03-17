@@ -46,25 +46,56 @@ function joinSocketRooms(socket) {
   }
 }
 
-function emitNewOrderCreated(io, payload = {}) {
+function emitToAdminRoles(io, eventName, payload = {}) {
   if (!io || typeof io.to !== 'function') {
     return { emitted: false, reason: 'io_missing' };
   }
 
-  const orderId = Number(payload.order?.id || payload.order_id || 0);
   let broadcaster = io;
   ADMIN_LIVE_SOCKET_ROLES.forEach((role) => {
     broadcaster = broadcaster.to(`role:${role}`);
   });
+  broadcaster.emit(eventName, payload);
 
-  broadcaster.emit('order:new', {
+  return { emitted: true };
+}
+
+function emitNewOrderCreated(io, payload = {}) {
+  const orderId = Number(payload.order?.id || payload.order_id || 0);
+  return emitToAdminRoles(io, 'order:new', {
     order_id: Number.isFinite(orderId) && orderId > 0 ? orderId : null,
     store_id: Number(payload.order?.store_id || payload.store_id || 0) || null,
     source: String(payload.source || payload.order?.store_key || '').trim() || null,
+    device_id: String(payload.order?.device_id || payload.device_id || '').trim() || null,
+    risk_score: Number(payload.order?.risk_score || payload.risk_score || 0) || 0,
+    risk_level: String(payload.order?.risk_level || payload.risk_level || '').trim() || 'low',
+    review_status: String(payload.order?.review_status || payload.review_status || '').trim() || 'normal',
     created_at: payload.order?.created_at || payload.created_at || new Date().toISOString(),
   });
+}
 
-  return { emitted: true };
+function emitOrderRiskUpdated(io, payload = {}) {
+  const orderId = Number(payload.order?.id || payload.order_id || 0);
+  return emitToAdminRoles(io, 'order:risk-updated', {
+    order_id: Number.isFinite(orderId) && orderId > 0 ? orderId : null,
+    device_id: String(payload.order?.device_id || payload.device_id || '').trim() || null,
+    risk_score: Number(payload.order?.risk_score || payload.risk_score || 0) || 0,
+    risk_level: String(payload.order?.risk_level || payload.risk_level || '').trim() || 'low',
+    review_status: String(payload.order?.review_status || payload.review_status || '').trim() || 'normal',
+    status: String(payload.order?.status || payload.status || '').trim() || null,
+    updated_at: payload.order?.updated_at || payload.updated_at || new Date().toISOString(),
+  });
+}
+
+function emitDeviceRiskUpdated(io, payload = {}) {
+  return emitToAdminRoles(io, 'device:risk-updated', {
+    device_id: String(payload.device?.device_id || payload.device_id || '').trim() || null,
+    source: String(payload.device?.source || payload.source || '').trim() || null,
+    risk_score: Number(payload.device?.last_risk_score || payload.risk_score || 0) || 0,
+    risk_level: String(payload.device?.last_risk_level || payload.risk_level || '').trim() || 'low',
+    status: String(payload.device?.current_status || payload.status || '').trim() || 'normal',
+    updated_at: payload.device?.updated_at || payload.updated_at || new Date().toISOString(),
+  });
 }
 
 function emitUserPermissionUpdated(io, payload = {}) {
@@ -105,8 +136,10 @@ function emitRolePermissionTemplateUpdated(io, payload = {}) {
 
 module.exports = {
   ADMIN_LIVE_SOCKET_ROLES,
+  emitDeviceRiskUpdated,
   emitRolePermissionTemplateUpdated,
   joinSocketRooms,
   emitNewOrderCreated,
+  emitOrderRiskUpdated,
   emitUserPermissionUpdated,
 };

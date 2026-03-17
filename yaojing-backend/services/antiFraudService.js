@@ -2,10 +2,21 @@ const { query, transaction } = require('../config/db');
 const contactRisk = require('../../shared/contactRisk');
 const deviceIdRules = require('../../shared/deviceId');
 const {
+  FINGERPRINT_HASH_BODY_FIELD,
+  FINGERPRINT_HASH_HEADER,
+  isValidFingerprintHash,
+  normalizeFingerprintHash,
+} = require('../../shared/fingerprint');
+const {
   applyAutomaticDeviceBlock,
   getDeviceStatus,
   recordDeviceAbnormalActivity,
 } = require('./deviceRiskService');
+const {
+  buildRiskSnapshot,
+  recordDeviceRiskEvent,
+  upsertDeviceRiskSnapshot,
+} = require('./riskControlService');
 
 const {
   BLOCKED_DEVICE_MESSAGE,
@@ -81,6 +92,23 @@ function getRequestDeviceId(req) {
     raw: String(rawValue || '').trim(),
     deviceId,
     isValid: isValidDeviceId(deviceId),
+  };
+}
+
+function getRequestFingerprintHash(req) {
+  const rawValue =
+    req.body?.[FINGERPRINT_HASH_BODY_FIELD] ||
+    req.body?.fingerprintHash ||
+    req.headers?.[FINGERPRINT_HASH_HEADER] ||
+    req.query?.[FINGERPRINT_HASH_BODY_FIELD] ||
+    req.query?.fingerprintHash ||
+    '';
+  const fingerprintHash = normalizeFingerprintHash(rawValue);
+
+  return {
+    raw: String(rawValue || '').trim(),
+    fingerprintHash,
+    isValid: isValidFingerprintHash(fingerprintHash),
   };
 }
 
@@ -398,6 +426,11 @@ async function insertOrderLimitEvent(limitType, context = {}, options = {}) {
 
 async function recordInvalidAttempt(deviceId, context = {}, options = {}) {
   const normalized = normalizeDeviceId(deviceId);
+  const snapshot = buildRiskSnapshot({
+    baseScore: Number(context.risk_score || 30),
+    flags: context.risk_flags || ['suspicious_contact', 'invalid_contact_attempt'],
+    fingerprintHash: context.fingerprint_hash,
+  });
   await insertOrderLimitEvent(
     ORDER_LIMIT_TYPES.INVALID_ATTEMPT,
     {
@@ -412,9 +445,48 @@ async function recordInvalidAttempt(deviceId, context = {}, options = {}) {
     {
       source: context.source || context.source_domain || context.store_key || null,
       source_store_key: context.store_key || null,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
       last_abnormal_at: new Date(),
       last_abnormal_count: context.metadata?.attempt_count || context.attempt_count || 0,
       last_abnormal_reason: context.contact_assessment?.reasonSummary || context.reason || 'invalid contact attempt',
+    },
+    options
+  );
+
+  await upsertDeviceRiskSnapshot(
+    normalized,
+    {
+      source: context.source || context.source_domain || context.store_key || null,
+      source_store_key: context.store_key || null,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      last_abnormal_at: new Date(),
+      last_abnormal_reason: context.contact_assessment?.reasonSummary || context.reason || 'invalid contact attempt',
+    },
+    options
+  );
+
+  await recordDeviceRiskEvent(
+    {
+      device_id: normalized,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      ip: context.ip,
+      source: context.source || context.source_domain || context.store_key || null,
+      store_key: context.store_key || null,
+      event_type: 'invalid_contact_attempt',
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      customer_name: context.customer_nickname,
+      meta: context.metadata,
     },
     options
   );
@@ -440,6 +512,11 @@ async function blockDeviceFor5Minutes(deviceId, context = {}, options = {}) {
     Number(options.minutes || context.duration_minutes || FRAUD_DEVICE_BLOCK_MINUTES)
   );
   const blockedUntil = new Date(Date.now() + durationMinutes * 60 * 1000);
+  const snapshot = buildRiskSnapshot({
+    baseScore: Number(context.risk_score || 75),
+    flags: context.risk_flags || ['device_auto_block'],
+    fingerprintHash: context.fingerprint_hash,
+  });
 
   await insertOrderLimitEvent(
     ORDER_LIMIT_TYPES.DEVICE_BLOCK,
@@ -456,6 +533,13 @@ async function blockDeviceFor5Minutes(deviceId, context = {}, options = {}) {
     {
       source: context.source || context.source_domain || context.store_key || null,
       source_store_key: context.store_key || null,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      order_id: context.order_id,
+      order_no: context.order_no,
       last_abnormal_at: new Date(),
       last_abnormal_count:
         context.metadata?.trigger_attempt_count ||
@@ -472,6 +556,48 @@ async function blockDeviceFor5Minutes(deviceId, context = {}, options = {}) {
     options
   );
 
+  await upsertDeviceRiskSnapshot(
+    normalized,
+    {
+      source: context.source || context.source_domain || context.store_key || null,
+      source_store_key: context.store_key || null,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      order_id: context.order_id,
+      order_no: context.order_no,
+      last_abnormal_at: new Date(),
+      last_abnormal_reason: context.contact_assessment?.reasonSummary || context.reason || 'device blocked',
+    },
+    options
+  );
+
+  await recordDeviceRiskEvent(
+    {
+      device_id: normalized,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      ip: context.ip,
+      source: context.source || context.source_domain || context.store_key || null,
+      store_key: context.store_key || null,
+      order_id: context.order_id,
+      order_no: context.order_no,
+      event_type: 'device_auto_block',
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      customer_name: context.customer_nickname,
+      meta: {
+        blocked_until: blockedUntil,
+        duration_minutes: durationMinutes,
+        ...(context.metadata || {}),
+      },
+    },
+    options
+  );
+
   return {
     blocked: true,
     device_id: normalized,
@@ -483,6 +609,11 @@ async function blockDeviceFor5Minutes(deviceId, context = {}, options = {}) {
 
 async function recordBlockedAttempt(deviceId, context = {}, options = {}) {
   const normalized = normalizeDeviceId(deviceId);
+  const snapshot = buildRiskSnapshot({
+    baseScore: Number(context.risk_score || 80),
+    flags: context.risk_flags || ['device_block_hit'],
+    fingerprintHash: context.fingerprint_hash,
+  });
   await insertOrderLimitEvent(
     ORDER_LIMIT_TYPES.DEVICE_BLOCK_HIT,
     {
@@ -493,13 +624,72 @@ async function recordBlockedAttempt(deviceId, context = {}, options = {}) {
     options
   );
 
+  await upsertDeviceRiskSnapshot(
+    normalized,
+    {
+      source: context.source || context.source_domain || context.store_key || null,
+      source_store_key: context.store_key || null,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      last_abnormal_at: new Date(),
+      last_abnormal_reason: context.reason || 'device block hit',
+    },
+    options
+  );
+
+  await recordDeviceRiskEvent(
+    {
+      device_id: normalized,
+      fingerprint_hash: snapshot.fingerprint_hash,
+      ip: context.ip,
+      source: context.source || context.source_domain || context.store_key || null,
+      store_key: context.store_key || null,
+      event_type: 'device_block_hit',
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      customer_name: context.customer_nickname,
+      meta: {
+        expires_at: context.expires_at || null,
+        ...(context.metadata || {}),
+      },
+    },
+    options
+  );
+
   return {
     device_id: normalized,
   };
 }
 
-async function recordMissingDeviceId(context = {}) {
-  await insertOrderLimitEvent(ORDER_LIMIT_TYPES.MISSING_DEVICE_ID, context);
+async function recordMissingDeviceId(context = {}, options = {}) {
+  const snapshot = buildRiskSnapshot({
+    baseScore: Number(context.risk_score || 20),
+    flags: context.risk_flags || ['missing_device_id'],
+    fingerprintHash: context.fingerprint_hash,
+  });
+
+  await insertOrderLimitEvent(ORDER_LIMIT_TYPES.MISSING_DEVICE_ID, context, options);
+  await recordDeviceRiskEvent(
+    {
+      fingerprint_hash: snapshot.fingerprint_hash,
+      ip: context.ip,
+      source: context.source || context.source_domain || context.store_key || null,
+      store_key: context.store_key || null,
+      event_type: 'missing_device_id',
+      risk_score: snapshot.risk_score,
+      risk_level: snapshot.risk_level,
+      risk_flags: snapshot.risk_flags,
+      contact_value: context.contact_value,
+      customer_name: context.customer_nickname,
+      meta: context.metadata,
+    },
+    options
+  );
 }
 
 function buildRiskMetadata(context = {}, attemptCount) {
@@ -608,6 +798,7 @@ module.exports = {
   getBlockedDeviceInfo,
   getDeviceInvalidAttemptCount,
   getRequestDeviceId,
+  getRequestFingerprintHash,
   getRetryAfterSeconds,
   handleInvalidContactAttempt,
   isBlockedDevice,

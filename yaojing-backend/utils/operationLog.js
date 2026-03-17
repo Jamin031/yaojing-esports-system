@@ -5,6 +5,7 @@ const { normalizeIp } = require('../services/antiFraudService');
 const ACTION_TEXT_MAP = Object.freeze({
   'orders.create': '新增订单',
   'orders.update_status': '修改订单状态',
+  'orders.mark_garbage': '标记垃圾订单',
   'orders.update_remark': '修改订单备注',
   'orders.problem_complete': '完成问题订单',
   'orders.update_problem': '保存问题订单修改',
@@ -49,6 +50,7 @@ const ACTION_TEXT_MAP = Object.freeze({
   'devices.permanent_block': '永久拉黑设备',
   'devices.unblock': '解除设备封禁',
   'devices.revoke_permanent_block': '撤回永久拉黑',
+  'garbage_order_marked': '垃圾订单关联设备',
 
   'notifications.read': '标记提醒已读',
 });

@@ -38,3 +38,11 @@ export function getDeviceLogsApi(deviceId, params) {
     params,
   });
 }
+
+export function getDeviceRiskEventsApi(deviceId, params) {
+  return request({
+    url: `/api/devices/${encodeURIComponent(deviceId)}/risk-events`,
+    method: 'get',
+    params,
+  });
+}

@@ -173,6 +173,7 @@ import { createOrder } from '@/api/orders'
 import { checkHealth } from '@/api/system'
 import { CONTACT_TYPE_MESSAGES, CONTACT_TYPE_OPTIONS, validateContactInput } from '@/utils/contactValidation'
 import { getOrCreateDeviceId } from '@/utils/deviceId'
+import { getOrderFingerprintPayload } from '@/utils/fingerprint'
 import { resolveStoreKey } from '@/utils/storeSource'
 import AppNavbar from './components/AppNavbar.vue'
 import PricingStretchGrid from './components/PricingStretchGrid.vue'
@@ -356,6 +357,10 @@ onMounted(async () => {
   } catch (err) {
     console.error('Health check failed:', err)
   }
+
+  void getOrderFingerprintPayload().catch((error) => {
+    console.warn('Fingerprint warmup failed:', error)
+  })
 })
 
 const isOrderSuccessResponse = (res, responseData) => {
@@ -432,6 +437,7 @@ const submitOrder = async () => {
     isSubmitting.value = true
     localStorage.setItem(LAST_ORDER_TIME_KEY, String(now))
     const deviceId = getOrCreateDeviceId()
+    const fingerprintPayload = await getOrderFingerprintPayload()
 
     const payload = {
       game_id: selectedGame.value?.id || null,
@@ -455,7 +461,8 @@ const submitOrder = async () => {
       order_info: selectedPackage.value.name,
       is_anonymous: isAnonymous.value ? 1 : 0,
       device_id: deviceId,
-      store_key: storeKey.value
+      store_key: storeKey.value,
+      ...fingerprintPayload
     }
 
     const res = await createOrder(payload)

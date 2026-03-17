@@ -221,10 +221,17 @@ async function ensureOrdersTable() {
       customer_contact VARCHAR(120) NULL,
       customer_nickname VARCHAR(80) NULL,
       device_id VARCHAR(120) NULL,
+      fingerprint_hash VARCHAR(128) NULL,
       source VARCHAR(120) NULL,
       order_info VARCHAR(255) NOT NULL,
       order_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
-      status ENUM('pending_contact', 'processing', 'problem', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact',
+      status ENUM('pending_contact', 'processing', 'problem', 'garbage', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact',
+      risk_score INT NOT NULL DEFAULT 0,
+      risk_level VARCHAR(32) NOT NULL DEFAULT 'low',
+      risk_flags JSON NULL,
+      is_junk_order TINYINT(1) NOT NULL DEFAULT 0,
+      junk_reason VARCHAR(255) NULL,
+      review_status VARCHAR(32) NOT NULL DEFAULT 'normal',
       store_rate DECIMAL(6,4) NOT NULL DEFAULT 0,
       store_share DECIMAL(12,2) NOT NULL DEFAULT 0,
       platform_rate DECIMAL(6,4) NOT NULL DEFAULT 0.0500,
@@ -255,6 +262,9 @@ async function ensureOrdersTable() {
       KEY idx_orders_created_at (created_at),
       KEY idx_orders_status_created (status, created_at),
       KEY idx_orders_device_created (device_id, created_at),
+      KEY idx_orders_fingerprint_created (fingerprint_hash, created_at),
+      KEY idx_orders_risk_level_created (risk_level, created_at),
+      KEY idx_orders_junk_status_created (is_junk_order, created_at),
       KEY idx_orders_shop_id (shop_id),
       KEY idx_orders_play_shop_id (play_shop_id),
       KEY idx_orders_deleted_created (is_deleted, created_at)
@@ -267,21 +277,31 @@ async function ensureOrdersTable() {
   await safeQuery(`ALTER TABLE orders ADD COLUMN customer_contact VARCHAR(120) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN customer_nickname VARCHAR(80) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN device_id VARCHAR(120) NULL`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN fingerprint_hash VARCHAR(128) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN source VARCHAR(120) NULL`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN risk_score INT NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN risk_level VARCHAR(32) NOT NULL DEFAULT 'low'`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN risk_flags JSON NULL`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN is_junk_order TINYINT(1) NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN junk_reason VARCHAR(255) NULL`);
+  await safeQuery(`ALTER TABLE orders ADD COLUMN review_status VARCHAR(32) NOT NULL DEFAULT 'normal'`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN revised_amount DECIMAL(12,2) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN order_remark VARCHAR(500) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN problem_remark VARCHAR(500) NULL`);
   await safeQuery(`ALTER TABLE orders ADD COLUMN is_anonymous TINYINT(1) NOT NULL DEFAULT 0`);
   await safeQuery(`ALTER TABLE orders MODIFY COLUMN is_anonymous TINYINT(1) NOT NULL DEFAULT 0`);
   await safeQuery(`ALTER TABLE orders ADD KEY idx_orders_play_shop_id (play_shop_id)`);
+  await safeQuery(`ALTER TABLE orders ADD KEY idx_orders_fingerprint_created (fingerprint_hash, created_at)`);
+  await safeQuery(`ALTER TABLE orders ADD KEY idx_orders_risk_level_created (risk_level, created_at)`);
+  await safeQuery(`ALTER TABLE orders ADD KEY idx_orders_junk_status_created (is_junk_order, created_at)`);
 
   await safeQuery(`UPDATE orders SET order_no = CONCAT('LEGACY', id) WHERE order_no IS NULL OR order_no = ''`);
   await safeQuery(`UPDATE orders SET status = 'pending_contact' WHERE status IN ('pending', 'confirmed')`);
   await safeQuery(
-    `ALTER TABLE orders MODIFY COLUMN status ENUM('pending', 'pending_contact', 'processing', 'problem', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact'`
+    `ALTER TABLE orders MODIFY COLUMN status ENUM('pending', 'pending_contact', 'processing', 'problem', 'garbage', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact'`
   );
   await safeQuery(
-    `ALTER TABLE orders MODIFY COLUMN status ENUM('pending_contact', 'processing', 'problem', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact'`
+    `ALTER TABLE orders MODIFY COLUMN status ENUM('pending_contact', 'processing', 'problem', 'garbage', 'completed', 'cancelled') NOT NULL DEFAULT 'pending_contact'`
   );
 
   await safeQuery(`UPDATE orders SET shop_id = play_shop_id WHERE shop_id IS NULL AND play_shop_id IS NOT NULL`);
@@ -300,6 +320,10 @@ async function ensureOrdersTable() {
   await safeQuery(`UPDATE orders SET platform_rate = ${DEFAULT_PLATFORM_RATE.toFixed(4)} WHERE platform_rate IS NULL OR platform_rate = 0`);
   await safeQuery(`UPDATE orders SET is_anonymous = 0 WHERE is_anonymous IS NULL`);
   await safeQuery(`UPDATE orders SET is_effective = 1 WHERE status = 'completed'`);
+  await safeQuery(`UPDATE orders SET risk_score = 0 WHERE risk_score IS NULL`);
+  await safeQuery(`UPDATE orders SET risk_level = 'low' WHERE risk_level IS NULL OR risk_level = ''`);
+  await safeQuery(`UPDATE orders SET is_junk_order = 0 WHERE is_junk_order IS NULL`);
+  await safeQuery(`UPDATE orders SET review_status = 'normal' WHERE review_status IS NULL OR review_status = ''`);
 
   if (!(await constraintExists('orders', 'fk_orders_store'))) {
     await safeQuery(`ALTER TABLE orders ADD CONSTRAINT fk_orders_store FOREIGN KEY (store_id) REFERENCES stores(id)`);
@@ -384,7 +408,13 @@ async function ensureDeviceBlockTables() {
       device_id VARCHAR(120) NOT NULL,
       source VARCHAR(120) NULL,
       source_store_key VARCHAR(80) NULL,
+      fingerprint_hash VARCHAR(128) NULL,
+      last_risk_score INT NOT NULL DEFAULT 0,
+      last_risk_level VARCHAR(32) NOT NULL DEFAULT 'low',
+      last_risk_flags JSON NULL,
+      last_contact_value VARCHAR(128) NULL,
       last_order_id BIGINT UNSIGNED NULL,
+      last_order_no VARCHAR(64) NULL,
       last_order_at DATETIME NULL,
       last_abnormal_at DATETIME NULL,
       last_abnormal_count INT NOT NULL DEFAULT 0,
@@ -406,8 +436,10 @@ async function ensureDeviceBlockTables() {
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (device_id),
       KEY idx_device_blocks_source (source),
+      KEY idx_device_blocks_fingerprint (fingerprint_hash),
       KEY idx_device_blocks_last_order (last_order_at),
       KEY idx_device_blocks_last_abnormal (last_abnormal_at),
+      KEY idx_device_blocks_risk_level (last_risk_level, last_operation_at),
       KEY idx_device_blocks_manual_block (manual_is_permanent, manual_block_expires_at),
       KEY idx_device_blocks_auto_block (auto_block_expires_at),
       KEY idx_device_blocks_last_operation (last_operation_at)
@@ -416,7 +448,13 @@ async function ensureDeviceBlockTables() {
 
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN source VARCHAR(120) NULL`);
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN source_store_key VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN fingerprint_hash VARCHAR(128) NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_risk_score INT NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_risk_level VARCHAR(32) NOT NULL DEFAULT 'low'`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_risk_flags JSON NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_contact_value VARCHAR(128) NULL`);
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_order_id BIGINT UNSIGNED NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_order_no VARCHAR(64) NULL`);
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_order_at DATETIME NULL`);
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_abnormal_at DATETIME NULL`);
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_abnormal_count INT NOT NULL DEFAULT 0`);
@@ -434,11 +472,16 @@ async function ensureDeviceBlockTables() {
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operator_name VARCHAR(80) NULL`);
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operation_type VARCHAR(50) NULL`);
   await safeQuery(`ALTER TABLE device_blocks ADD COLUMN last_operation_at DATETIME NULL`);
+  await safeQuery(`ALTER TABLE device_blocks ADD KEY idx_device_blocks_fingerprint (fingerprint_hash)`);
+  await safeQuery(`ALTER TABLE device_blocks ADD KEY idx_device_blocks_risk_level (last_risk_level, last_operation_at)`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS device_block_logs (
       id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       device_id VARCHAR(120) NOT NULL,
+      order_id BIGINT UNSIGNED NULL,
+      order_no VARCHAR(64) NULL,
+      fingerprint_hash VARCHAR(128) NULL,
       action_type VARCHAR(50) NOT NULL,
       action_scope VARCHAR(20) NOT NULL DEFAULT 'manual',
       operator_user_id BIGINT UNSIGNED NULL,
@@ -446,6 +489,9 @@ async function ensureDeviceBlockTables() {
       operator_name VARCHAR(80) NULL,
       duration_minutes INT NULL,
       is_permanent TINYINT(1) NOT NULL DEFAULT 0,
+      risk_score INT NOT NULL DEFAULT 0,
+      risk_flags JSON NULL,
+      reason_type VARCHAR(60) NULL,
       reason VARCHAR(255) NULL,
       remark VARCHAR(500) NULL,
       source VARCHAR(120) NULL,
@@ -454,22 +500,78 @@ async function ensureDeviceBlockTables() {
       metadata_json JSON NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       KEY idx_device_block_logs_device_created (device_id, created_at),
-      KEY idx_device_block_logs_action_created (action_type, created_at)
+      KEY idx_device_block_logs_action_created (action_type, created_at),
+      KEY idx_device_block_logs_order_created (order_id, created_at),
+      KEY idx_device_block_logs_fingerprint_created (fingerprint_hash, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN order_id BIGINT UNSIGNED NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN order_no VARCHAR(64) NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN fingerprint_hash VARCHAR(128) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN action_scope VARCHAR(20) NOT NULL DEFAULT 'manual'`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN operator_user_id BIGINT UNSIGNED NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN operator_username VARCHAR(64) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN operator_name VARCHAR(80) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN duration_minutes INT NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN is_permanent TINYINT(1) NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN risk_score INT NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN risk_flags JSON NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN reason_type VARCHAR(60) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN reason VARCHAR(255) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN remark VARCHAR(500) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN source VARCHAR(120) NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN before_status_json JSON NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN after_status_json JSON NULL`);
   await safeQuery(`ALTER TABLE device_block_logs ADD COLUMN metadata_json JSON NULL`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_order_created (order_id, created_at)`);
+  await safeQuery(`ALTER TABLE device_block_logs ADD KEY idx_device_block_logs_fingerprint_created (fingerprint_hash, created_at)`);
+}
+
+async function ensureDeviceRiskEventsTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS device_risk_events (
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      device_id VARCHAR(120) NULL,
+      fingerprint_hash VARCHAR(128) NULL,
+      ip VARCHAR(64) NULL,
+      source VARCHAR(120) NULL,
+      store_key VARCHAR(80) NULL,
+      order_id BIGINT UNSIGNED NULL,
+      order_no VARCHAR(64) NULL,
+      event_type VARCHAR(64) NOT NULL,
+      risk_score INT NOT NULL DEFAULT 0,
+      risk_level VARCHAR(32) NOT NULL DEFAULT 'low',
+      risk_flags JSON NULL,
+      contact_value VARCHAR(128) NULL,
+      customer_name VARCHAR(80) NULL,
+      meta_json JSON NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_device_risk_events_device_created (device_id, created_at),
+      KEY idx_device_risk_events_fingerprint_created (fingerprint_hash, created_at),
+      KEY idx_device_risk_events_event_created (event_type, created_at),
+      KEY idx_device_risk_events_order_created (order_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN device_id VARCHAR(120) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN fingerprint_hash VARCHAR(128) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN ip VARCHAR(64) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN source VARCHAR(120) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN store_key VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN order_id BIGINT UNSIGNED NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN order_no VARCHAR(64) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN event_type VARCHAR(64) NOT NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN risk_score INT NOT NULL DEFAULT 0`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN risk_level VARCHAR(32) NOT NULL DEFAULT 'low'`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN risk_flags JSON NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN contact_value VARCHAR(128) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN customer_name VARCHAR(80) NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD COLUMN meta_json JSON NULL`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD KEY idx_device_risk_events_device_created (device_id, created_at)`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD KEY idx_device_risk_events_fingerprint_created (fingerprint_hash, created_at)`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD KEY idx_device_risk_events_event_created (event_type, created_at)`);
+  await safeQuery(`ALTER TABLE device_risk_events ADD KEY idx_device_risk_events_order_created (order_id, created_at)`);
 }
 
 async function ensureOperationLogsTable() {
@@ -1042,6 +1144,7 @@ async function initSchema() {
   await ensureProblemOrdersTable();
   await ensureOrderLimitsTable();
   await ensureDeviceBlockTables();
+  await ensureDeviceRiskEventsTable();
   await ensureOperationLogsTable();
   await ensureRecycleOrdersTable();
   await ensureOrdersHourStatsTable();

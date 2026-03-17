@@ -57,6 +57,19 @@
             </el-select>
           </el-form-item>
 
+          <el-form-item label="风险等级">
+            <el-select v-model="filters.risk_level" clearable placeholder="全部风险" style="width: 100%">
+              <el-option v-for="item in riskLevelOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+
+          <el-form-item label="垃圾订单">
+            <el-select v-model="filters.is_junk_order" clearable placeholder="全部" style="width: 100%">
+              <el-option label="仅垃圾订单" :value="1" />
+              <el-option label="仅非垃圾订单" :value="0" />
+            </el-select>
+          </el-form-item>
+
           <el-form-item v-if="isSuperAdmin" label="包含已删除">
             <el-switch v-model="filters.include_deleted" :active-value="1" :inactive-value="0" />
           </el-form-item>
@@ -124,15 +137,37 @@
                   <span>下单时间</span>
                   <strong>{{ formatMinute(row.created_at) }}</strong>
                 </div>
+                <div class="mobile-card-item">
+                  <span>设备标识</span>
+                  <strong>{{ row.device_id || '-' }}</strong>
+                </div>
+                <div class="mobile-card-item">
+                  <span>指纹</span>
+                  <strong>{{ maskFingerprint(row.fingerprint_hash) }}</strong>
+                </div>
                 <div v-if="hasOrderField('orders:amount')" class="mobile-card-item">
                   <span>订单金额</span>
                   <strong class="money-cell">￥{{ money(resolveOrderAmount(row)) }}</strong>
+                </div>
+                <div class="mobile-card-item">
+                  <span>风险等级</span>
+                  <strong>{{ riskLevelText(row.risk_level) }} / {{ row.risk_score || 0 }}</strong>
+                </div>
+                <div class="mobile-card-item">
+                  <span>垃圾订单</span>
+                  <strong>{{ row.is_junk_order ? '是' : '否' }}</strong>
                 </div>
               </div>
 
               <div v-if="hasOrderField('orders:info')" class="mobile-order-info">{{ shortOrderInfo(row.order_info, 58) }}</div>
               <div v-if="canViewOrderRemark" class="mobile-order-remark">
                 <span>客户备注：</span>{{ customerRemarkPreview(row, 30) }}
+              </div>
+              <div class="mobile-order-remark">
+                <span>风险标记：</span>{{ riskFlagsSummary(row.risk_flags) }}
+              </div>
+              <div v-if="row.is_junk_order || row.junk_reason" class="mobile-order-remark">
+                <span>垃圾原因：</span>{{ row.junk_reason || '垃圾订单' }}
               </div>
 
               <div v-if="hasOrderField('orders:status') && canEditStatus" class="mobile-status-editor">
@@ -143,6 +178,7 @@
 
               <div class="mobile-card-actions">
                 <el-button v-if="canOpenDetail" link type="primary" @click="openDetail(row)">详情</el-button>
+                <el-button v-if="canEditStatus" link type="warning" @click="openGarbageOrderDialog(row)">垃圾订单</el-button>
                 <el-button v-if="canDeleteOrder && !row.is_deleted" link type="danger" @click="removeOrder(row)">删除</el-button>
                 <el-button v-if="canDeleteOrder && row.is_deleted" link type="primary" @click="restoreOrder(row)">恢复</el-button>
               </div>
@@ -169,6 +205,12 @@
               </template>
             </el-table-column>
             <el-table-column v-if="hasOrderField('orders:source_store')" prop="store_name" label="来源网吧" min-width="128" />
+            <el-table-column label="设备标识" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.device_id || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="指纹" min-width="148" show-overflow-tooltip>
+              <template #default="{ row }">{{ maskFingerprint(row.fingerprint_hash) }}</template>
+            </el-table-column>
             <el-table-column v-if="canViewCustomerNickname" label="客户昵称" min-width="120" show-overflow-tooltip>
               <template #default="{ row }">{{ customerNicknameText(row) }}</template>
             </el-table-column>
@@ -183,6 +225,25 @@
             </el-table-column>
             <el-table-column v-if="hasOrderField('orders:amount')" label="订单金额" min-width="112">
               <template #default="{ row }"><span class="money-cell">￥{{ money(resolveOrderAmount(row)) }}</span></template>
+            </el-table-column>
+            <el-table-column label="风险等级" min-width="140">
+              <template #default="{ row }">
+                <div class="risk-cell">
+                  <el-tag :type="riskLevelTagType(row.risk_level)" effect="light">{{ riskLevelText(row.risk_level) }}</el-tag>
+                  <span class="risk-score-inline">{{ row.risk_score || 0 }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="风险标记" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">{{ riskFlagsSummary(row.risk_flags) }}</template>
+            </el-table-column>
+            <el-table-column label="垃圾订单" min-width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.is_junk_order ? 'danger' : 'info'">{{ row.is_junk_order ? '垃圾订单' : '正常' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="垃圾原因" min-width="160" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.junk_reason || '-' }}</template>
             </el-table-column>
             <el-table-column v-if="hasOrderField('orders:status')" label="订单状态" min-width="150">
               <template #default="{ row }">
@@ -204,6 +265,7 @@
               <template #default="{ row }">
                 <div class="op-cell">
                   <el-button v-if="canOpenDetail" link type="primary" @click="openDetail(row)">详情</el-button>
+                  <el-button v-if="canEditStatus" link type="warning" @click="openGarbageOrderDialog(row)">垃圾订单</el-button>
                   <el-button v-if="canDeleteOrder && !row.is_deleted" link type="danger" @click="removeOrder(row)">删除</el-button>
                   <el-button v-if="canDeleteOrder && row.is_deleted" link type="primary" @click="restoreOrder(row)">恢复</el-button>
                 </div>
@@ -263,6 +325,34 @@
             <div v-if="hasOrderField('orders:created_at')" class="detail-item">
               <span>下单时间</span>
               <strong>{{ formatMinute(detailDrawer.row.created_at) }}</strong>
+            </div>
+            <div v-if="detailDrawer.row.device_id" class="detail-item detail-item-wide">
+              <span>设备标识</span>
+              <strong class="detail-break">{{ detailDrawer.row.device_id }}</strong>
+            </div>
+            <div v-if="detailDrawer.row.source" class="detail-item">
+              <span>设备来源</span>
+              <strong>{{ detailDrawer.row.source }}</strong>
+            </div>
+            <div v-if="detailDrawer.row.fingerprint_hash" class="detail-item detail-item-wide">
+              <span>浏览器指纹</span>
+              <strong class="detail-break">{{ maskFingerprint(detailDrawer.row.fingerprint_hash) }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>风险等级</span>
+              <strong>{{ riskLevelText(detailDrawer.row.risk_level) }} / {{ detailDrawer.row.risk_score || 0 }}</strong>
+            </div>
+            <div class="detail-item">
+              <span>垃圾订单</span>
+              <strong>{{ detailDrawer.row.is_junk_order ? '是' : '否' }}</strong>
+            </div>
+            <div class="detail-item detail-item-wide">
+              <span>风险标记</span>
+              <strong>{{ riskFlagsSummary(detailDrawer.row.risk_flags) }}</strong>
+            </div>
+            <div v-if="detailDrawer.row.junk_reason" class="detail-item detail-item-wide">
+              <span>垃圾原因</span>
+              <strong>{{ detailDrawer.row.junk_reason }}</strong>
             </div>
             <div v-if="hasOrderField('orders:info')" class="detail-item detail-item-wide">
               <span>订单信息</span>
@@ -370,6 +460,63 @@
         <el-button type="primary" @click="saveOrder">创建</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="garbageDialog.visible" title="标记垃圾订单" width="560px">
+      <el-form :model="garbageDialog.form" label-width="108px">
+        <el-form-item label="订单号">
+          <div class="dialog-static-text">{{ garbageDialog.row?.order_no || '-' }}</div>
+        </el-form-item>
+        <el-form-item label="设备标识">
+          <div class="dialog-static-text dialog-break">{{ garbageDialog.row?.device_id || '该订单无 device_id' }}</div>
+        </el-form-item>
+        <el-form-item label="同步拉黑设备">
+          <el-switch
+            v-model="garbageDialog.form.block_device"
+            :disabled="!canLinkGarbageDevice || !hasDeviceIdentifier(garbageDialog.row)"
+          />
+        </el-form-item>
+        <el-alert
+          v-if="!hasDeviceIdentifier(garbageDialog.row)"
+          class="garbage-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="该订单无设备标识，仍可标记为垃圾订单，但无法联动设备拉黑。"
+        />
+        <el-alert
+          v-else-if="!canLinkGarbageDevice"
+          class="garbage-alert"
+          type="info"
+          :closable="false"
+          show-icon
+          title="当前账号没有设备拉黑权限，本次只会更新订单状态为垃圾订单。"
+        />
+        <template v-if="garbageDialog.form.block_device && canLinkGarbageDevice && hasDeviceIdentifier(garbageDialog.row)">
+          <el-form-item label="拉黑时长">
+            <el-select v-model="garbageDialog.form.duration" style="width: 100%">
+              <el-option v-for="item in garbageDurationOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+        </template>
+        <el-form-item label="处理原因">
+          <el-input v-model="garbageDialog.form.reason" maxlength="255" placeholder="可选，默认写入垃圾订单" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input
+            v-model="garbageDialog.form.remark"
+            type="textarea"
+            :rows="4"
+            maxlength="500"
+            placeholder="可选，记录刷单、恶意下单等处理说明"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="garbageDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="garbageDialog.submitting" @click="submitGarbageOrder">确认处理</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -447,6 +594,8 @@ const filters = reactive({
   store_id: undefined,
   status: undefined,
   play_store_id: undefined,
+  risk_level: undefined,
+  is_junk_order: undefined,
   include_deleted: 0,
   order_no: '',
 });
@@ -469,6 +618,18 @@ const createDialog = reactive({
   },
 });
 
+const garbageDialog = reactive({
+  visible: false,
+  row: null,
+  submitting: false,
+  form: {
+    block_device: true,
+    duration: '5',
+    reason: '垃圾订单',
+    remark: '',
+  },
+});
+
 const isStoreOwner = computed(() => authStore.role === 'store_owner');
 const isSuperAdmin = computed(() => authStore.role === 'super_admin');
 const isPhoneView = computed(() => viewportWidth.value <= 860);
@@ -479,6 +640,7 @@ const drawerSize = computed(() => {
   return '620px';
 });
 const canEditStatus = computed(() => hasButton('orders:change_status') && !isStoreOwner.value);
+const canLinkGarbageDevice = computed(() => hasButton('api.device_management.block') && !isStoreOwner.value);
 const canAssignPlayStore = computed(() => hasButton('orders:assign_play_store') && !isStoreOwner.value);
 const canCreateOrder = computed(() => hasButton('orders:create') && !isStoreOwner.value);
 const canBatchStatus = computed(() => hasButton('orders:batch_status') && !isStoreOwner.value);
@@ -534,6 +696,7 @@ const statusOptions = [
   { label: '待处理（旧状态）', value: 'pending_contact' },
   { label: '处理中', value: 'processing' },
   { label: '问题订单', value: 'problem' },
+  { label: '垃圾订单', value: 'garbage' },
   { label: '已完成', value: 'completed' },
   { label: '已取消', value: 'cancelled' },
 ];
@@ -548,6 +711,21 @@ const batchStatusOptions = [
   { label: '问题订单', value: 'problem' },
   { label: '已完成', value: 'completed' },
   { label: '已取消', value: 'cancelled' },
+];
+const garbageDurationOptions = [
+  { label: '3分钟', value: '3' },
+  { label: '5分钟', value: '5' },
+  { label: '10分钟', value: '10' },
+  { label: '30分钟', value: '30' },
+  { label: '1小时', value: '60' },
+  { label: '24小时', value: '1440' },
+  { label: '永久拉黑', value: 'permanent' },
+];
+const riskLevelOptions = [
+  { label: '低风险', value: 'low' },
+  { label: '中风险', value: 'medium' },
+  { label: '高风险', value: 'high' },
+  { label: '极高风险', value: 'critical' },
 ];
 
 function money(v) {
@@ -665,12 +843,62 @@ function customerRemarkPreview(row, max = 16) {
   return shortOrderInfo(rawOrderRemark(row), max);
 }
 
+function maskFingerprint(value) {
+  const text = String(value || '').trim();
+  if (!text) return '-';
+  if (text.length <= 14) return text;
+  return `${text.slice(0, 8)}...${text.slice(-6)}`;
+}
+
+function normalizeRiskFlags(flags) {
+  if (Array.isArray(flags)) {
+    return flags.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  if (!flags) return [];
+  if (typeof flags === 'string') {
+    try {
+      return normalizeRiskFlags(JSON.parse(flags));
+    } catch {
+      return flags
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function riskFlagsSummary(flags) {
+  const values = normalizeRiskFlags(flags);
+  return values.length ? values.join(', ') : '-';
+}
+
+function riskLevelText(level) {
+  const value = String(level || 'low').trim().toLowerCase();
+  const map = {
+    low: '低风险',
+    medium: '中风险',
+    high: '高风险',
+    critical: '极高风险',
+  };
+  return map[value] || value || '低风险';
+}
+
+function riskLevelTagType(level) {
+  const value = String(level || 'low').trim().toLowerCase();
+  if (value === 'critical') return 'danger';
+  if (value === 'high') return 'warning';
+  if (value === 'medium') return 'info';
+  return 'success';
+}
+
 function statusText(status) {
   const map = {
     pending: '待处理',
     pending_contact: '待处理',
     processing: '处理中',
     problem: '问题订单',
+    garbage: '垃圾订单',
     completed: '已完成',
     cancelled: '已取消',
   };
@@ -680,8 +908,13 @@ function statusText(status) {
 function statusType(status) {
   if (status === 'completed') return 'success';
   if (status === 'problem') return 'danger';
+  if (status === 'garbage') return 'warning';
   if (status === 'cancelled') return 'info';
   return 'warning';
+}
+
+function hasDeviceIdentifier(row) {
+  return Boolean(String(row?.device_id || '').trim());
 }
 
 function formatMinute(value) {
@@ -762,6 +995,11 @@ function buildQuery() {
     order_no: filters.order_no || undefined,
     store_id: filters.store_id,
     play_store_id: toPayloadId(filters.play_store_id),
+    risk_level: filters.risk_level || undefined,
+    is_junk_order:
+      filters.is_junk_order === undefined || filters.is_junk_order === null || filters.is_junk_order === ''
+        ? undefined
+        : Number(filters.is_junk_order),
   };
 
   if (filters.dateRange?.length === 2) {
@@ -958,6 +1196,8 @@ function resetFilters() {
   filters.store_id = undefined;
   filters.status = undefined;
   filters.play_store_id = undefined;
+  filters.risk_level = undefined;
+  filters.is_junk_order = undefined;
   filters.include_deleted = 0;
   filters.order_no = '';
   pagination.page = 1;
@@ -968,6 +1208,15 @@ function openDetail(row) {
   detailDrawer.orderId = resolvePrimaryOrderId(row);
   detailDrawer.row = row;
   detailDrawer.visible = true;
+}
+
+function openGarbageOrderDialog(row) {
+  garbageDialog.row = row;
+  garbageDialog.form.block_device = canLinkGarbageDevice.value && hasDeviceIdentifier(row);
+  garbageDialog.form.duration = '5';
+  garbageDialog.form.reason = '垃圾订单';
+  garbageDialog.form.remark = '';
+  garbageDialog.visible = true;
 }
 
 function onSelectionChange(rows) {
@@ -1022,6 +1271,10 @@ function handleSizeChange(size) {
 }
 
 async function handleStatusChange(row, status) {
+  if (status === 'garbage') {
+    openGarbageOrderDialog(row);
+    return;
+  }
   await updateOrderStatusApi(row.id, status);
   ElMessage.success('订单状态已更新');
   emitAdminSync('order-status-updated');
@@ -1030,6 +1283,45 @@ async function handleStatusChange(row, status) {
     return;
   }
   await fetchOrders();
+}
+
+async function submitGarbageOrder() {
+  if (!garbageDialog.row?.id) return;
+
+  garbageDialog.submitting = true;
+  try {
+    const shouldBlock =
+      garbageDialog.form.block_device &&
+      canLinkGarbageDevice.value &&
+      hasDeviceIdentifier(garbageDialog.row);
+    const isPermanent = garbageDialog.form.duration === 'permanent';
+    const resp = await updateOrderStatusApi(garbageDialog.row.id, {
+      status: 'garbage',
+      block_device: shouldBlock,
+      duration_minutes: shouldBlock ? (isPermanent ? 'permanent' : Number(garbageDialog.form.duration)) : undefined,
+      is_permanent: shouldBlock ? isPermanent : undefined,
+      reason: garbageDialog.form.reason || undefined,
+      remark: garbageDialog.form.remark || undefined,
+    });
+
+    const deviceLinkResult = resp?.data?.device_link_result || {};
+    garbageDialog.visible = false;
+    ElMessage.success('订单已标记为垃圾订单');
+    if (deviceLinkResult.warning) {
+      ElMessage.warning(deviceLinkResult.warning);
+    } else if (deviceLinkResult.blocked) {
+      ElMessage.success(deviceLinkResult.is_permanent ? '关联设备已永久拉黑' : '关联设备已拉黑');
+    }
+
+    emitAdminSync('order-risk-updated', {
+      allow_same_tab: true,
+      focus_order_id: garbageDialog.row.id,
+      device_id: garbageDialog.row.device_id || '',
+    });
+    await fetchOrders();
+  } finally {
+    garbageDialog.submitting = false;
+  }
 }
 
 async function handleAssignPlayStore(row, playStoreId) {
@@ -1126,8 +1418,10 @@ const orderRefreshReasons = new Set([
   'order-alert-received',
   'order-deleted',
   'order-restored',
+  'order-risk-updated',
   'order-status-updated',
   'order-play-store-assigned',
+  'device-risk-updated',
   'orders-batch-delete',
   'orders-batch-status',
   'problem-order-saved',
@@ -1297,6 +1591,17 @@ onUnmounted(() => {
   color: #1e222c;
   font-weight: 620;
   font-variant-numeric: tabular-nums;
+}
+
+.risk-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.risk-score-inline {
+  color: #374151;
+  font-weight: 600;
 }
 
 .rate {
@@ -1544,6 +1849,28 @@ onUnmounted(() => {
 .detail-muted {
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.detail-break {
+  word-break: break-all;
+}
+
+.dialog-static-text {
+  width: 100%;
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f6f8fc;
+  color: #263143;
+  line-height: 1.5;
+}
+
+.dialog-break {
+  word-break: break-all;
+}
+
+.garbage-alert {
+  margin-bottom: 16px;
 }
 
 :deep(.el-table__body tr.order-focus-highlight > td),

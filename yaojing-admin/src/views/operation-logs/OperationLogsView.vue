@@ -90,6 +90,7 @@ import { getList, getTotal } from '../../utils/api';
 
 const ACTION_TEXT_MAP = {
   update_order_status: '修改订单状态',
+  'orders.mark_garbage': '标记垃圾订单',
   update_order_remark: '更新订单备注',
   update_order_note: '更新订单备注',
   assign_play_store: '派单陪玩店',
@@ -117,6 +118,7 @@ const ACTION_TEXT_MAP = {
   create_play_store: '新增陪玩店',
   update_play_store: '编辑陪玩店',
   delete_play_store: '删除陪玩店',
+  garbage_order_marked: '垃圾订单关联设备',
 };
 
 const ACTION_ALIAS_MAP = {
@@ -163,6 +165,7 @@ const STATUS_MAP = {
   pending_contact: '待联系',
   processing: '订单进行中',
   problem: '问题订单',
+  garbage: '垃圾订单',
   completed: '订单已完成',
   cancelled: '已取消',
 };

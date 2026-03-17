@@ -45,7 +45,7 @@ import { useAuthStore } from '../store/auth';
 import { useNotificationStore } from '../store/notifications';
 import { featureRoutes } from '../router';
 import { usePermission } from '../composables/usePermission';
-import { offAdminSync, onAdminSync } from '../utils/adminSync';
+import { emitAdminSync, offAdminSync, onAdminSync } from '../utils/adminSync';
 import { isManualLogoutInProgress } from '../utils/authFlow';
 import { connectSocket, getSocket } from '../utils/socket';
 
@@ -61,6 +61,9 @@ const PROFILE_SYNC_INTERVAL = 2 * 60 * 1000;
 let permissionRealtimeSocket = null;
 let permissionUpdateHandler = null;
 let permissionTemplateHandler = null;
+let orderNewHandler = null;
+let orderRiskUpdateHandler = null;
+let deviceRiskUpdateHandler = null;
 const mobileViewport = computed(() => appStore.mobileViewport);
 const mobileSidebarOpen = computed(() => appStore.mobileSidebarOpen);
 const asideWidth = computed(() => {
@@ -135,9 +138,21 @@ function unbindPermissionRealtime() {
   if (socket && permissionTemplateHandler) {
     socket.off('permissions:template-updated', permissionTemplateHandler);
   }
+  if (socket && orderNewHandler) {
+    socket.off('order:new', orderNewHandler);
+  }
+  if (socket && orderRiskUpdateHandler) {
+    socket.off('order:risk-updated', orderRiskUpdateHandler);
+  }
+  if (socket && deviceRiskUpdateHandler) {
+    socket.off('device:risk-updated', deviceRiskUpdateHandler);
+  }
   permissionRealtimeSocket = null;
   permissionUpdateHandler = null;
   permissionTemplateHandler = null;
+  orderNewHandler = null;
+  orderRiskUpdateHandler = null;
+  deviceRiskUpdateHandler = null;
 }
 
 function bindPermissionRealtime() {
@@ -156,6 +171,15 @@ function bindPermissionRealtime() {
   if (prevSocket && permissionTemplateHandler) {
     prevSocket.off('permissions:template-updated', permissionTemplateHandler);
   }
+  if (prevSocket && orderNewHandler) {
+    prevSocket.off('order:new', orderNewHandler);
+  }
+  if (prevSocket && orderRiskUpdateHandler) {
+    prevSocket.off('order:risk-updated', orderRiskUpdateHandler);
+  }
+  if (prevSocket && deviceRiskUpdateHandler) {
+    prevSocket.off('device:risk-updated', deviceRiskUpdateHandler);
+  }
 
   permissionRealtimeSocket = socket;
   permissionUpdateHandler = async (payload = {}) => {
@@ -170,9 +194,38 @@ function bindPermissionRealtime() {
     if (!currentRole || !targetRole || currentRole !== targetRole) return;
     await refreshProfilePermissionState();
   };
+  orderNewHandler = (payload = {}) => {
+    emitAdminSync('order-created', {
+      allow_same_tab: true,
+      focus_order_id: payload.order_id || '',
+      device_id: payload.device_id || '',
+      risk_level: payload.risk_level || 'low',
+      risk_score: payload.risk_score || 0,
+    });
+  };
+  orderRiskUpdateHandler = (payload = {}) => {
+    emitAdminSync('order-risk-updated', {
+      allow_same_tab: true,
+      focus_order_id: payload.order_id || '',
+      device_id: payload.device_id || '',
+      risk_level: payload.risk_level || 'low',
+      risk_score: payload.risk_score || 0,
+    });
+  };
+  deviceRiskUpdateHandler = (payload = {}) => {
+    emitAdminSync('device-risk-updated', {
+      allow_same_tab: true,
+      device_id: payload.device_id || '',
+      risk_level: payload.risk_level || 'low',
+      risk_score: payload.risk_score || 0,
+    });
+  };
 
   socket.on('permissions:updated', permissionUpdateHandler);
   socket.on('permissions:template-updated', permissionTemplateHandler);
+  socket.on('order:new', orderNewHandler);
+  socket.on('order:risk-updated', orderRiskUpdateHandler);
+  socket.on('device:risk-updated', deviceRiskUpdateHandler);
 }
 
 function stopProfileSyncTimer() {

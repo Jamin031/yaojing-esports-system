@@ -1,6 +1,7 @@
 const { buildPagination, ok, fail } = require('../utils/http');
 const { hasButtonPermission, hasPagePermission } = require('../middleware/permissions');
 const { writeOperationLog } = require('../utils/operationLog');
+const { emitDeviceRiskUpdated } = require('../services/adminRealtimeService');
 const {
   blockDevice,
   getDeviceStatus,
@@ -9,6 +10,7 @@ const {
   listDevices,
   unblockDevice,
 } = require('../services/deviceRiskService');
+const { listDeviceRiskEvents } = require('../services/riskControlService');
 const { isValidDeviceId, normalizeDeviceId } = require('../../shared/deviceId');
 
 const ALLOWED_BLOCK_MINUTES = new Set([3, 5, 10, 30, 60, 1440]);
@@ -132,6 +134,21 @@ async function getDeviceOperationLogs(req, res) {
   return ok(res, payload, '设备操作日志获取成功');
 }
 
+async function getDeviceRiskEventLogs(req, res) {
+  if (!canViewDevices(req.user)) {
+    return fail(res, '权限不足', 403);
+  }
+
+  const { deviceId, isValid } = resolveDeviceId(req.params.deviceId);
+  if (!isValid) {
+    return fail(res, 'device_id 无效', 400);
+  }
+
+  const { page, pageSize } = buildPagination(req.query, 10, 100);
+  const payload = await listDeviceRiskEvents({ deviceId, page, pageSize });
+  return ok(res, payload, '设备风险事件获取成功');
+}
+
 async function blockDeviceProfile(req, res) {
   if (!canBlockDevices(req.user)) {
     return fail(res, '权限不足', 403);
@@ -166,6 +183,10 @@ async function blockDeviceProfile(req, res) {
     target_id: deviceId,
     before,
     after,
+  });
+
+  emitDeviceRiskUpdated(req.app?.get('io'), {
+    device: after,
   });
 
   return ok(res, after, duration.isPermanent ? '设备已永久拉黑' : '设备拉黑成功');
@@ -203,10 +224,15 @@ async function unblockDeviceProfile(req, res) {
     after,
   });
 
+  emitDeviceRiskUpdated(req.app?.get('io'), {
+    device: after,
+  });
+
   return ok(res, after, '设备已解除封禁');
 }
 
 module.exports = {
+  getDeviceRiskEventLogs,
   getDeviceOperationLogs,
   getDeviceProfile,
   getDeviceSourceOptions,

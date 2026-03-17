@@ -3,6 +3,7 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { requireAuth } = require('../middleware/auth');
 const {
   blockDeviceProfile,
+  getDeviceRiskEventLogs,
   getDeviceOperationLogs,
   getDeviceProfile,
   getDeviceSourceOptions,
@@ -16,6 +17,7 @@ router.get('/', requireAuth, asyncHandler(listDeviceProfiles));
 router.get('/sources', requireAuth, asyncHandler(getDeviceSourceOptions));
 router.get('/:deviceId', requireAuth, asyncHandler(getDeviceProfile));
 router.get('/:deviceId/logs', requireAuth, asyncHandler(getDeviceOperationLogs));
+router.get('/:deviceId/risk-events', requireAuth, asyncHandler(getDeviceRiskEventLogs));
 router.post('/:deviceId/block', requireAuth, asyncHandler(blockDeviceProfile));
 router.post('/:deviceId/unblock', requireAuth, asyncHandler(unblockDeviceProfile));
 
