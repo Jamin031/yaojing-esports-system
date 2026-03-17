@@ -2,25 +2,25 @@
   <div class="page-shell">
     <div class="page-header">
       <div>
-        <p class="page-kicker">Risk Control</p>
-        <h2 class="page-title">Device Management</h2>
-        <p class="page-subtitle">Track fingerprint, risk score, recent abnormal activity, and block lifecycle in one place.</p>
+        <p class="page-kicker">设备风控中心</p>
+        <h2 class="page-title">设备管理</h2>
+        <p class="page-subtitle">按设备维度查看封禁状态、风险画像和最近关联订单，不再与订单主视图混在一起。</p>
       </div>
       <div class="page-metrics">
         <div class="metric-chip">
-          <span>Total Devices</span>
+          <span>设备总数</span>
           <strong>{{ pagination.total }}</strong>
         </div>
         <div class="metric-chip">
-          <span>Blocked</span>
+          <span>已封禁</span>
           <strong>{{ blockedCount }}</strong>
         </div>
         <div class="metric-chip">
-          <span>Permanent</span>
+          <span>永久拉黑</span>
           <strong>{{ permanentCount }}</strong>
         </div>
         <div class="metric-chip">
-          <span>High Risk</span>
+          <span>高风险设备</span>
           <strong>{{ highRiskCount }}</strong>
         </div>
       </div>
@@ -28,57 +28,60 @@
 
     <div class="card-surface page-toolbar">
       <el-form :inline="true" :model="filters" class="device-filter-form">
-        <el-form-item label="Status">
-          <el-select v-model="filters.status" clearable placeholder="All statuses" style="width: 160px">
-            <el-option label="Normal" value="normal" />
-            <el-option label="Blocked" value="blocked" />
-            <el-option label="Permanent" value="permanent" />
+        <el-form-item label="状态">
+          <el-select v-model="filters.status" clearable placeholder="全部状态" style="width: 160px">
+            <el-option label="正常" value="normal" />
+            <el-option label="已封禁" value="blocked" />
+            <el-option label="永久拉黑" value="permanent" />
           </el-select>
         </el-form-item>
-        <el-form-item label="Source">
-          <el-select v-model="filters.source" clearable filterable placeholder="All sources" style="width: 220px">
+        <el-form-item label="来源">
+          <el-select v-model="filters.source" clearable filterable placeholder="全部来源" style="width: 220px">
             <el-option v-for="item in sourceOptions" :key="item" :label="item" :value="item" />
           </el-select>
         </el-form-item>
-        <el-form-item label="Keyword">
-          <el-input v-model="filters.keyword" clearable placeholder="device_id / source / fingerprint" style="width: 280px" />
+        <el-form-item label="关键词">
+          <el-input v-model="filters.keyword" clearable placeholder="device_id / 指纹 / 来源" style="width: 280px" />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="search">Search</el-button>
-          <el-button @click="resetFilters">Reset</el-button>
+          <el-button type="primary" @click="search">查询</el-button>
+          <el-button @click="resetFilters">重置</el-button>
         </el-form-item>
       </el-form>
     </div>
 
     <div class="card-surface page-table">
       <div class="section-head">
-        <h3 class="section-title">Device List</h3>
-        <span class="section-tip">Manual block wins over automatic block. Risk data refreshes from live order and device events.</span>
+        <h3 class="section-title">设备列表</h3>
+        <span class="section-tip">手动封禁优先于自动封禁，垃圾订单联动和风控事件会实时刷新到这里。</span>
       </div>
 
-      <el-table :data="list" v-loading="loading" stripe>
-        <el-table-column prop="device_id" label="device_id" min-width="220" show-overflow-tooltip />
-        <el-table-column label="Fingerprint" min-width="150" show-overflow-tooltip>
+      <el-table :data="list" v-loading="loading" stripe empty-text="暂无设备数据">
+        <el-table-column prop="device_id" label="设备标识" min-width="220" show-overflow-tooltip />
+        <el-table-column label="指纹摘要" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ maskFingerprint(row.fingerprint_hash) }}</template>
         </el-table-column>
-        <el-table-column label="Source" min-width="130" show-overflow-tooltip>
+        <el-table-column label="来源" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.source || '-' }}</template>
         </el-table-column>
-        <el-table-column label="Status" min-width="108">
+        <el-table-column label="当前状态" min-width="108">
           <template #default="{ row }">
             <el-tag :type="statusTagType(row)">{{ statusText(row) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="Block Type" min-width="126">
+        <el-table-column label="封禁类型" min-width="126">
           <template #default="{ row }">{{ blockTypeText(row) }}</template>
         </el-table-column>
-        <el-table-column label="Blocked Until" min-width="160">
-          <template #default="{ row }">{{ row.is_permanent ? 'Permanent' : formatMinute(row.blocked_until) }}</template>
+        <el-table-column label="封禁开始" min-width="150">
+          <template #default="{ row }">{{ formatMinute(row.blocked_at) }}</template>
         </el-table-column>
-        <el-table-column label="Time Left" min-width="120">
+        <el-table-column label="封禁结束" min-width="160">
+          <template #default="{ row }">{{ row.is_permanent ? '永久拉黑' : formatMinute(row.blocked_until) }}</template>
+        </el-table-column>
+        <el-table-column label="剩余时间" min-width="120">
           <template #default="{ row }">{{ remainingTimeText(row) }}</template>
         </el-table-column>
-        <el-table-column label="Latest Order" min-width="180" show-overflow-tooltip>
+        <el-table-column label="最近关联订单" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="compact-cell">
               <div>{{ row.last_order_no || '-' }}</div>
@@ -86,7 +89,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="Latest Risk" min-width="220" show-overflow-tooltip>
+        <el-table-column label="最近风险等级" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="compact-cell">
               <div class="risk-row">
@@ -94,31 +97,21 @@
                 <strong class="risk-score">{{ row.last_risk_score || 0 }}</strong>
               </div>
               <div class="subtle">{{ riskFlagsSummary(row.last_risk_flags) }}</div>
-              <div class="subtle">Contact: {{ row.last_contact_value || '-' }}</div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="Latest Abnormal" min-width="220" show-overflow-tooltip>
-          <template #default="{ row }">
-            <div class="compact-cell">
-              <div>{{ formatMinute(row.last_abnormal_at) }}</div>
-              <div class="subtle">Count: {{ row.last_abnormal_count || 0 }}</div>
-              <div class="subtle">{{ row.last_abnormal_reason || '-' }}</div>
-            </div>
-          </template>
+        <el-table-column label="最近风险原因" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ latestReasonText(row) }}</template>
         </el-table-column>
-        <el-table-column label="Last Operator" min-width="140" show-overflow-tooltip>
+        <el-table-column label="最近操作人" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ operatorText(row) }}</template>
         </el-table-column>
-        <el-table-column label="Reason / Remark" min-width="220" show-overflow-tooltip>
-          <template #default="{ row }">{{ reasonText(row) }}</template>
-        </el-table-column>
-        <el-table-column label="Actions" min-width="190" fixed="right">
+        <el-table-column label="操作" min-width="190" fixed="right">
           <template #default="{ row }">
             <div class="op-cell">
-              <el-button v-if="canBlock" link type="danger" @click="openBlockDialog(row)">Block</el-button>
-              <el-button v-if="canUnblock && row.is_blocked" link type="primary" @click="openUnblockDialog(row)">Unblock</el-button>
-              <el-button link type="info" @click="openDetailsDrawer(row)">Details</el-button>
+              <el-button v-if="canBlock" link type="danger" @click="openBlockDialog(row)">拉黑</el-button>
+              <el-button v-if="canUnblock && row.is_blocked" link type="primary" @click="openUnblockDialog(row)">解封</el-button>
+              <el-button link type="info" @click="openDetailsDrawer(row)">详情</el-button>
             </div>
           </template>
         </el-table-column>
@@ -137,92 +130,89 @@
       />
     </div>
 
-    <el-dialog v-model="blockDialog.visible" title="Block Device" width="520px">
+    <el-dialog v-model="blockDialog.visible" title="拉黑设备" width="520px">
       <el-form :model="blockDialog.form" label-width="96px">
-        <el-form-item label="Device">
+        <el-form-item label="设备标识">
           <div class="device-id-box">{{ blockDialog.form.device_id }}</div>
         </el-form-item>
-        <el-form-item label="Duration">
+        <el-form-item label="拉黑时长">
           <el-select v-model="blockDialog.form.duration" style="width: 100%">
             <el-option v-for="item in durationOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="Reason">
-          <el-input v-model="blockDialog.form.reason" maxlength="255" placeholder="Optional reason" />
+        <el-form-item label="原因">
+          <el-input v-model="blockDialog.form.reason" maxlength="255" placeholder="可选原因，例如垃圾订单、恶意刷单" />
         </el-form-item>
-        <el-form-item label="Remark">
-          <el-input v-model="blockDialog.form.remark" type="textarea" :rows="4" maxlength="500" placeholder="Optional note" />
+        <el-form-item label="备注">
+          <el-input v-model="blockDialog.form.remark" type="textarea" :rows="4" maxlength="500" placeholder="可选备注" />
         </el-form-item>
       </el-form>
 
       <template #footer>
-        <el-button @click="blockDialog.visible = false">Cancel</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitBlock">Confirm</el-button>
+        <el-button @click="blockDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="submitBlock">确认拉黑</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="unblockDialog.visible" title="Unblock Device" width="520px">
+    <el-dialog v-model="unblockDialog.visible" title="解封设备" width="520px">
       <el-alert
         type="warning"
         :closable="false"
         show-icon
-        title="This clears the active manual, automatic, or permanent block."
+        title="此操作会解除当前设备的手动封禁、自动封禁或永久拉黑状态。"
       />
       <el-form :model="unblockDialog.form" label-width="96px" class="unblock-form">
-        <el-form-item label="Device">
+        <el-form-item label="设备标识">
           <div class="device-id-box">{{ unblockDialog.form.device_id }}</div>
         </el-form-item>
-        <el-form-item label="Reason">
-          <el-input v-model="unblockDialog.form.reason" maxlength="255" placeholder="Optional reason" />
+        <el-form-item label="原因">
+          <el-input v-model="unblockDialog.form.reason" maxlength="255" placeholder="可选原因" />
         </el-form-item>
-        <el-form-item label="Remark">
-          <el-input v-model="unblockDialog.form.remark" type="textarea" :rows="4" maxlength="500" placeholder="Optional note" />
+        <el-form-item label="备注">
+          <el-input v-model="unblockDialog.form.remark" type="textarea" :rows="4" maxlength="500" placeholder="可选备注" />
         </el-form-item>
       </el-form>
 
       <template #footer>
-        <el-button @click="unblockDialog.visible = false">Cancel</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitUnblock">Confirm</el-button>
+        <el-button @click="unblockDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="submitUnblock">确认解封</el-button>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="detailDrawer.visible" size="960px" :title="`Device Details - ${detailDrawer.deviceId || ''}`">
+    <el-drawer v-model="detailDrawer.visible" size="960px" :title="`设备详情 - ${detailDrawer.deviceId || ''}`">
       <div class="drawer-shell">
         <section class="detail-summary" v-if="detailDrawer.device">
           <div class="summary-item">
-            <span>Fingerprint</span>
+            <span>指纹摘要</span>
             <strong>{{ maskFingerprint(detailDrawer.device.fingerprint_hash) }}</strong>
           </div>
           <div class="summary-item">
-            <span>Latest Risk</span>
+            <span>最近风险等级</span>
             <strong>{{ riskLevelText(detailDrawer.device.last_risk_level) }} / {{ detailDrawer.device.last_risk_score || 0 }}</strong>
           </div>
           <div class="summary-item">
-            <span>Latest Order</span>
+            <span>最近关联订单</span>
             <strong>{{ detailDrawer.device.last_order_no || '-' }}</strong>
           </div>
           <div class="summary-item">
-            <span>Risk Flags</span>
-            <strong>{{ riskFlagsSummary(detailDrawer.device.last_risk_flags) }}</strong>
+            <span>最近操作人</span>
+            <strong>{{ operatorText(detailDrawer.device) }}</strong>
           </div>
         </section>
 
         <el-tabs v-model="detailDrawer.activeTab">
-          <el-tab-pane label="Operation Logs" name="logs">
-            <el-table :data="detailDrawer.logs" v-loading="detailDrawer.logsLoading" stripe>
-              <el-table-column label="Time" min-width="150">
+          <el-tab-pane label="操作日志" name="logs">
+            <el-table :data="detailDrawer.logs" v-loading="detailDrawer.logsLoading" stripe empty-text="暂无操作日志">
+              <el-table-column label="时间" min-width="150">
                 <template #default="{ row }">{{ formatMinute(row.created_at) }}</template>
               </el-table-column>
-              <el-table-column label="Action" min-width="140">
+              <el-table-column label="操作类型" min-width="140">
                 <template #default="{ row }">{{ logActionText(row.action_type) }}</template>
               </el-table-column>
-              <el-table-column label="Order" min-width="160">
+              <el-table-column label="关联订单" min-width="160">
                 <template #default="{ row }">{{ row.order_no || (row.order_id ? `#${row.order_id}` : '-') }}</template>
               </el-table-column>
-              <el-table-column label="Fingerprint" min-width="150">
-                <template #default="{ row }">{{ maskFingerprint(row.fingerprint_hash) }}</template>
-              </el-table-column>
-              <el-table-column label="Risk" min-width="160">
+              <el-table-column label="风险信息" min-width="170">
                 <template #default="{ row }">
                   <div class="compact-cell">
                     <div>{{ row.risk_score || 0 }}</div>
@@ -230,13 +220,13 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column label="Duration" min-width="100">
+              <el-table-column label="处理时长" min-width="110">
                 <template #default="{ row }">{{ logDurationText(row) }}</template>
               </el-table-column>
-              <el-table-column label="Operator" min-width="120">
-                <template #default="{ row }">{{ row.operator_name || row.operator_username || 'System' }}</template>
+              <el-table-column label="操作人" min-width="120">
+                <template #default="{ row }">{{ row.operator_name || row.operator_username || '系统' }}</template>
               </el-table-column>
-              <el-table-column label="Reason / Remark" min-width="240" show-overflow-tooltip>
+              <el-table-column label="原因 / 备注" min-width="240" show-overflow-tooltip>
                 <template #default="{ row }">{{ [row.reason, row.remark].filter(Boolean).join(' / ') || '-' }}</template>
               </el-table-column>
             </el-table>
@@ -252,18 +242,18 @@
             />
           </el-tab-pane>
 
-          <el-tab-pane label="Risk Events" name="events">
-            <el-table :data="detailDrawer.events" v-loading="detailDrawer.eventsLoading" stripe>
-              <el-table-column label="Time" min-width="150">
+          <el-tab-pane label="风险事件" name="events">
+            <el-table :data="detailDrawer.events" v-loading="detailDrawer.eventsLoading" stripe empty-text="暂无风险事件">
+              <el-table-column label="时间" min-width="150">
                 <template #default="{ row }">{{ formatMinute(row.created_at) }}</template>
               </el-table-column>
-              <el-table-column label="Event" min-width="170" show-overflow-tooltip>
+              <el-table-column label="事件类型" min-width="170" show-overflow-tooltip>
                 <template #default="{ row }">{{ riskEventText(row.event_type) }}</template>
               </el-table-column>
-              <el-table-column label="Order" min-width="160">
+              <el-table-column label="关联订单" min-width="160">
                 <template #default="{ row }">{{ row.order_no || (row.order_id ? `#${row.order_id}` : '-') }}</template>
               </el-table-column>
-              <el-table-column label="Risk" min-width="180">
+              <el-table-column label="风险等级" min-width="180">
                 <template #default="{ row }">
                   <div class="compact-cell">
                     <div class="risk-row">
@@ -274,13 +264,10 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column label="Contact" min-width="130" show-overflow-tooltip>
+              <el-table-column label="联系方式" min-width="130" show-overflow-tooltip>
                 <template #default="{ row }">{{ row.contact_value || '-' }}</template>
               </el-table-column>
-              <el-table-column label="Customer" min-width="120" show-overflow-tooltip>
-                <template #default="{ row }">{{ row.customer_name || '-' }}</template>
-              </el-table-column>
-              <el-table-column label="Meta" min-width="220" show-overflow-tooltip>
+              <el-table-column label="附加信息" min-width="220" show-overflow-tooltip>
                 <template #default="{ row }">{{ metaSummary(row.meta) }}</template>
               </el-table-column>
             </el-table>
@@ -302,7 +289,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import {
   blockDeviceApi,
@@ -316,39 +304,40 @@ import { emitAdminSync, isSelfAdminSyncEvent, offAdminSync, onAdminSync } from '
 import { getList, getTotal } from '../../utils/api';
 import { usePermission } from '../../composables/usePermission';
 
+const route = useRoute();
 const { hasButton } = usePermission();
 
 const durationOptions = [
-  { label: '3 min', value: '3' },
-  { label: '5 min', value: '5' },
-  { label: '10 min', value: '10' },
-  { label: '30 min', value: '30' },
-  { label: '1 hour', value: '60' },
-  { label: '24 hours', value: '1440' },
-  { label: 'Permanent', value: 'permanent' },
+  { label: '3分钟', value: '3' },
+  { label: '5分钟', value: '5' },
+  { label: '10分钟', value: '10' },
+  { label: '30分钟', value: '30' },
+  { label: '1小时', value: '60' },
+  { label: '24小时', value: '1440' },
+  { label: '永久拉黑', value: 'permanent' },
 ];
 
 const ACTION_TEXT_MAP = {
-  auto_block: 'Auto block',
-  manual_block: 'Manual block',
-  manual_permanent_block: 'Permanent block',
-  manual_unblock: 'Manual unblock',
-  manual_revoke_permanent_block: 'Revoke permanent block',
-  garbage_order_marked: 'Garbage order linked',
+  auto_block: '自动封禁',
+  manual_block: '手动拉黑',
+  manual_permanent_block: '永久拉黑',
+  manual_unblock: '手动解封',
+  manual_revoke_permanent_block: '撤回永久拉黑',
+  garbage_order_marked: '垃圾订单联动',
 };
 
 const RISK_EVENT_TEXT_MAP = {
-  suspicious_contact: 'Suspicious contact',
-  fingerprint_high_risk_match: 'New device with known risky fingerprint',
-  fingerprint_repeat_1m: 'Fingerprint repeated too often in 1 minute',
-  fingerprint_abnormal_5m: 'Fingerprint abnormal in 5 minutes',
-  contact_repeat_5m: 'Contact repeated too often',
-  garbage_order: 'Garbage order',
-  invalid_contact_attempt: 'Invalid contact attempt',
-  device_auto_block: 'Automatic device block',
-  device_block_hit: 'Blocked device retried',
-  missing_device_id: 'Missing device id',
-  fingerprint_manual_block_match: 'Fingerprint matched a manually blocked device',
+  suspicious_contact: '联系方式异常',
+  fingerprint_high_risk_match: '新设备命中旧高风险指纹',
+  fingerprint_repeat_1m: '1分钟内重复提交过多',
+  fingerprint_abnormal_5m: '5分钟内连续异常提交',
+  contact_repeat_5m: '联系方式短时重复提交',
+  garbage_order: '垃圾订单',
+  invalid_contact_attempt: '无效联系方式提交',
+  device_auto_block: '自动封禁设备',
+  device_block_hit: '封禁设备再次提交',
+  missing_device_id: '缺少设备标识',
+  fingerprint_manual_block_match: '命中手动拉黑设备指纹',
 };
 
 const loading = ref(false);
@@ -429,17 +418,17 @@ function formatMinute(value) {
 
 function formatRemainingSeconds(seconds) {
   const total = Number(seconds || 0);
-  if (!Number.isFinite(total) || total <= 0) return 'Expired';
-  if (total < 60) return `${total}s`;
-  if (total < 3600) return `${Math.ceil(total / 60)}m`;
+  if (!Number.isFinite(total) || total <= 0) return '已到期';
+  if (total < 60) return `${total}秒`;
+  if (total < 3600) return `${Math.ceil(total / 60)}分钟`;
   if (total < 86400) {
     const hours = Math.floor(total / 3600);
     const minutes = Math.ceil((total % 3600) / 60);
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    return minutes > 0 ? `${hours}小时${minutes}分钟` : `${hours}小时`;
   }
   const days = Math.floor(total / 86400);
   const hours = Math.ceil((total % 86400) / 3600);
-  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  return hours > 0 ? `${days}天${hours}小时` : `${days}天`;
 }
 
 function maskFingerprint(value) {
@@ -458,7 +447,10 @@ function normalizeRiskFlags(flags) {
     try {
       return normalizeRiskFlags(JSON.parse(flags));
     } catch {
-      return flags.split(',').map((item) => item.trim()).filter(Boolean);
+      return flags
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
     }
   }
   return [];
@@ -466,12 +458,18 @@ function normalizeRiskFlags(flags) {
 
 function riskFlagsSummary(flags) {
   const listValue = normalizeRiskFlags(flags);
-  return listValue.length ? listValue.join(', ') : '-';
+  return listValue.length ? listValue.join('、') : '-';
 }
 
 function riskLevelText(level) {
   const value = String(level || 'low').trim().toLowerCase();
-  return value || 'low';
+  const map = {
+    low: '低风险',
+    medium: '中风险',
+    high: '高风险',
+    critical: '极高风险',
+  };
+  return map[value] || value || '低风险';
 }
 
 function riskLevelTagType(level) {
@@ -483,9 +481,9 @@ function riskLevelTagType(level) {
 }
 
 function statusText(row) {
-  if (row.is_permanent) return 'Permanent';
-  if (row.is_blocked) return 'Blocked';
-  return 'Normal';
+  if (row.is_permanent) return '永久拉黑';
+  if (row.is_blocked) return '已封禁';
+  return '正常';
 }
 
 function statusTagType(row) {
@@ -495,14 +493,14 @@ function statusTagType(row) {
 }
 
 function blockTypeText(row) {
-  if (!row.is_blocked) return '-';
-  if (row.is_permanent) return 'Manual permanent';
-  return row.block_type === 'automatic' ? 'Automatic' : 'Manual';
+  if (!row.is_blocked) return '未封禁';
+  if (row.is_permanent) return '手动永久拉黑';
+  return row.block_type === 'automatic' ? '自动封禁' : '手动拉黑';
 }
 
 function remainingTimeText(row) {
   if (!row.is_blocked) return '-';
-  if (row.is_permanent) return 'Permanent';
+  if (row.is_permanent) return '永久拉黑';
   return formatRemainingSeconds(row.remaining_seconds);
 }
 
@@ -510,8 +508,8 @@ function operatorText(row) {
   return row.last_operator_name || row.last_operator_username || '-';
 }
 
-function reasonText(row) {
-  return [row.reason, row.remark, row.last_abnormal_reason].filter(Boolean).join(' / ') || '-';
+function latestReasonText(row) {
+  return row.reason || row.remark || row.last_abnormal_reason || '-';
 }
 
 function logActionText(actionType) {
@@ -523,11 +521,11 @@ function riskEventText(eventType) {
 }
 
 function logDurationText(row) {
-  if (row.is_permanent) return 'Permanent';
+  if (row.is_permanent) return '永久拉黑';
   if (row.duration_minutes == null || row.duration_minutes === 0) return '-';
-  if (row.duration_minutes < 60) return `${row.duration_minutes} min`;
-  if (row.duration_minutes % 60 === 0) return `${row.duration_minutes / 60} hour`;
-  return `${row.duration_minutes} min`;
+  if (row.duration_minutes < 60) return `${row.duration_minutes}分钟`;
+  if (row.duration_minutes % 60 === 0) return `${row.duration_minutes / 60}小时`;
+  return `${row.duration_minutes}分钟`;
 }
 
 function metaSummary(meta) {
@@ -578,7 +576,7 @@ function search() {
 }
 
 function resetFilters() {
-  filters.keyword = '';
+  filters.keyword = String(route.query.keyword || '').trim();
   filters.status = '';
   filters.source = '';
   pagination.page = 1;
@@ -620,7 +618,7 @@ async function submitBlock() {
       reason: blockDialog.form.reason || undefined,
       remark: blockDialog.form.remark || undefined,
     });
-    ElMessage.success(isPermanent ? 'Device permanently blocked' : 'Device blocked');
+    ElMessage.success(isPermanent ? '设备已永久拉黑' : '设备已拉黑');
     blockDialog.visible = false;
     await fetchDevices();
     if (detailDrawer.visible && detailDrawer.deviceId === blockDialog.form.device_id) {
@@ -644,7 +642,7 @@ async function submitUnblock() {
       reason: unblockDialog.form.reason || undefined,
       remark: unblockDialog.form.remark || undefined,
     });
-    ElMessage.success('Device unblocked');
+    ElMessage.success('设备已解封');
     unblockDialog.visible = false;
     await fetchDevices();
     if (detailDrawer.visible && detailDrawer.deviceId === unblockDialog.form.device_id) {
@@ -736,7 +734,19 @@ function onSyncEvent(event) {
   }
 }
 
+watch(
+  () => route.query.keyword,
+  (value) => {
+    const keyword = String(value || '').trim();
+    if (keyword === String(filters.keyword || '').trim()) return;
+    filters.keyword = keyword;
+    pagination.page = 1;
+    fetchDevices();
+  },
+);
+
 onMounted(async () => {
+  filters.keyword = String(route.query.keyword || '').trim();
   await Promise.all([fetchSources(), fetchDevices()]);
   setupAutoRefresh();
   onAdminSync(onSyncEvent);

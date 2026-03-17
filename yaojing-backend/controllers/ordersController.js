@@ -959,7 +959,17 @@ function buildCompletedNotificationTitle(previousStatus) {
   return String(previousStatus) === 'problem' ? '问题订单已完成' : '订单已完成';
 }
 
+function canViewGarbageOrders(user) {
+  return (
+    hasAnyRole(user, ['super_admin', 'admin', 'customer_service']) &&
+    hasPagePermission(user, 'orders:view')
+  );
+}
+
 function canReadOrder(user, order) {
+  if (String(order?.status || '') === 'garbage' || Number(order?.is_junk_order || 0) === 1) {
+    return canViewGarbageOrders(user);
+  }
   if (canReadAllOrders(user)) {
     return true;
   }
@@ -1028,6 +1038,7 @@ async function listOrders(req, res) {
     order_no,
     risk_level,
     is_junk_order,
+    include_garbage,
     start_time,
     end_time,
     include_deleted,
@@ -1076,6 +1087,14 @@ async function listOrders(req, res) {
   }
 
   const canViewProblemOrders = hasPagePermission(user, 'problem_orders:view');
+  const includeGarbageOrders = parseBooleanFlag(include_garbage, false);
+  const requestGarbageOnly =
+    normalizeStatus(status) === 'garbage' ||
+    (typeof is_junk_order !== 'undefined' && String(is_junk_order).trim() !== '' && parseBooleanFlag(is_junk_order, false));
+  const garbageAccessRequested = includeGarbageOrders || requestGarbageOnly;
+  if (garbageAccessRequested && !canViewGarbageOrders(user)) {
+    return buildEmptyResponse();
+  }
   const filters = ['1=1'];
   const params = {};
 
@@ -1102,6 +1121,9 @@ async function listOrders(req, res) {
   }
 
   filters.push(recycleOnly ? 'o.is_deleted = 1' : 'o.is_deleted = 0');
+  if (!garbageAccessRequested) {
+    filters.push(`(o.status <> 'garbage' AND COALESCE(o.is_junk_order, 0) = 0)`);
+  }
 
   if (store_id && canReadAllOrders(user)) {
     filters.push('o.store_id = :store_id');
@@ -1821,7 +1843,10 @@ async function updateOrderStatus(req, res) {
     targetStatus === 'garbage'
       ? mergeRiskSnapshot(currentRiskSnapshot, {
           fingerprint_hash: target.fingerprint_hash,
-          risk_score: RISK_RULES.garbage_order,
+          risk_score:
+            currentRiskSnapshot.is_junk_order === 1 || currentRiskSnapshot.risk_flags.includes('garbage_order')
+              ? 0
+              : RISK_RULES.garbage_order,
           risk_flags: ['garbage_order'],
           is_junk_order: 1,
           junk_reason: garbageReason,

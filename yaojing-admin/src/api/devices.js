@@ -15,6 +15,13 @@ export function getDeviceSourcesApi() {
   });
 }
 
+export function getDeviceProfileApi(deviceId) {
+  return request({
+    url: `/api/devices/${encodeURIComponent(deviceId)}`,
+    method: 'get',
+  });
+}
+
 export function blockDeviceApi(deviceId, data) {
   return request({
     url: `/api/devices/${encodeURIComponent(deviceId)}/block`,

@@ -9,6 +9,7 @@ const MainLayout = () => import('../layout/MainLayout.vue');
 const LoginView = () => import('../views/login/LoginView.vue');
 const DashboardView = () => import('../views/dashboard/DashboardView.vue');
 const OrdersView = () => import('../views/orders/OrdersView.vue');
+const GarbageOrdersView = () => import('../views/garbage-orders/GarbageOrdersView.vue');
 const ProblemOrdersView = () => import('../views/problem-orders/ProblemOrdersView.vue');
 const RecycleOrdersView = () => import('../views/recycle-orders/RecycleOrdersView.vue');
 const OnlineUserOrdersView = () => import('../views/online-user-orders/OnlineUserOrdersView.vue');
@@ -45,6 +46,20 @@ export const featureRoutes = [
       roles: ['super_admin', 'admin', 'customer_service', 'finance', 'store_owner'],
       menu: true,
       menuKey: 'menu:orders',
+      permissionKey: 'orders:view',
+    },
+  },
+  {
+    path: '/garbage-orders',
+    name: 'garbage-orders',
+    component: GarbageOrdersView,
+    meta: {
+      title: '垃圾订单',
+      icon: 'Delete',
+      roles: ['super_admin', 'admin', 'customer_service'],
+      menu: true,
+      menuKey: 'orders:view',
+      menuPermissionType: 'pages',
       permissionKey: 'orders:view',
     },
   },
